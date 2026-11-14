@@ -9,6 +9,10 @@
     "sharp": "0.35.5"
   },
   "exports": {
+    "./chat-db": {
+      "types": "./src/chat-db.ts",
+      "default": "./src/chat-db.ts"
+    },
     "./delivery": {
       "types": "./src/delivery.ts",
       "default": "./src/delivery.ts"

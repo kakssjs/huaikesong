@@ -12,6 +12,7 @@ import { INTERIOR_IMAGES } from '@/lib/visuals';
 import { agentOf } from '@/lib/agents';
 import ProjectLocation, { type ProjectPlace } from '../../components/ProjectLocation';
 import ContractWorkbench from '../../components/ContractWorkbench';
+import ProjectChatButton from '../../components/ProjectChatButton';
 import DeliveryEvidence, { DELIVERY_LABEL } from '../../components/DeliveryEvidence';
 import { buildDeliveryReport } from '@i-renovation/shared/delivery';
 
@@ -1347,6 +1348,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
       {/* 底部流水线标注 */}
 
+      {order && order.companyId !== null && !['open', 'bidding'].includes(order.status) && <section className="panel chat-project-entry"><h2>和承接装修公司沟通</h2><p>讨论材料、工期与施工细节，沟通记录与当前项目关联。价格和合同变更仍需正式确认。</p><ProjectChatButton orderId={order.id} /></section>}
       {order && order.companyId !== null && !['open', 'bidding'].includes(order.status) && <ContractWorkbench key={order.id} orderId={order.id} role="homeowner" />}
       <div className="closing-steps">
         <span>STEP 01 识别 → 设计</span>

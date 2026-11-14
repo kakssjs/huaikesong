@@ -12,6 +12,8 @@ uploads/
 scripts/.regression/
 scripts/.contract-http/
 scripts/.delivery-http/
+scripts/.chat-test/
+scripts/.chat-http/
 scripts/.workflow-regression/
 scripts/.workflow-test/
 .demo-data/

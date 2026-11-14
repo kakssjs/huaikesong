@@ -38,6 +38,7 @@ export default function AuthNav() {
     const consoleLabel = user.role === 'boss' ? '老板控制台' : user.role === 'company' ? '公司后台' : '我的工作台';
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        {user.role !== 'boss' && <Link href="/messages" className="btn btn-ghost" style={{ fontSize: 12, padding: '6px 10px' }}>消息中心</Link>}
         <Link href={consoleHref} className="btn btn-primary" style={{ fontSize: 12, padding: '6px 14px' }}>
           {consoleLabel}
         </Link>

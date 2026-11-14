@@ -12,6 +12,8 @@ import { INTERIOR_IMAGES } from '@/lib/visuals';
 import { agentOf } from '@/lib/agents';
 import ProjectLocation, { type ProjectPlace } from '../../components/ProjectLocation';
 import ContractWorkbench from '../../components/ContractWorkbench';
+import DeliveryEvidence, { DELIVERY_LABEL } from '../../components/DeliveryEvidence';
+import { buildDeliveryReport } from '@i-renovation/shared/delivery';
 
 const Scene3D = lazy(() => import('../../components/Scene3D'));
 
@@ -173,7 +175,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [genRoomsProgress, setGenRoomsProgress] = useState('');
   // 报价调整 + 最终确认（业主人工动作）
   const [adjustPct, setAdjustPct] = useState(0);
-  const [decision, setDecision] = useState<{ finalTotal: number; adjustPct: number; confirmedAt: string } | null>(null);
+  const [decision, setDecision] = useState<{ finalTotal: number; adjustPct: number; confirmedAt: string; deliveryTaskId?: number } | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   // 删除项目（两级确认，防误触）
   const [delConfirm, setDelConfirm] = useState(false);
@@ -218,10 +220,12 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       const fp = results.find(r => r.kind === 'floorplan')?.content as StudioData | undefined;
       if (fp && (fp.stdImage || fp.image || fp.rects?.length)) setFpData(fp);
     }
+    const currentDelivery = buildDeliveryReport({ project: data.project, tasks: data.tasks, results: data.results });
+    if (decision && (!currentDelivery.readyForReview || decision.deliveryTaskId !== currentDelivery.stages[3].taskId)) setDecision(null);
     if (!decision) {
-      const dc = results.find(r => r.kind === 'decision')?.content as { finalTotal?: number; adjustPct?: number; confirmedAt?: string } | undefined;
-      if (dc?.confirmedAt) {
-        setDecision({ finalTotal: dc.finalTotal ?? 0, adjustPct: dc.adjustPct ?? 0, confirmedAt: dc.confirmedAt });
+      const dc = [...results].reverse().find(r => r.kind === 'decision')?.content as { finalTotal?: number; adjustPct?: number; confirmedAt?: string; deliveryTaskId?: number } | undefined;
+      if (dc?.confirmedAt && currentDelivery.readyForReview && dc.deliveryTaskId === currentDelivery.stages[3].taskId) {
+        setDecision({ finalTotal: dc.finalTotal ?? 0, adjustPct: dc.adjustPct ?? 0, confirmedAt: dc.confirmedAt, deliveryTaskId: dc.deliveryTaskId });
         if (typeof dc.adjustPct === 'number') setAdjustPct(dc.adjustPct);
       }
     }
@@ -300,7 +304,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
   // 最终确认（业主人工动作）→ 自动发布到接单市场
   async function finalConfirm() {
-    if (confirmBusy) return;
+    if (confirmBusy || !delivery.readyForReview) return;
     setConfirmBusy(true);
     try {
       const base = quote?.total ?? 0;
@@ -314,7 +318,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           content: { finalTotal, adjustPct, confirmedAt, note: '业主最终确认（人工动作）· 确认后自动发布' },
         }),
       });
-      if (!saved.ok) throw new Error('确认结果保存失败，请重试');
+      const savedBody = await saved.json();
+      if (!saved.ok) throw new Error(savedBody.error || '确认结果保存失败，请重试');
       if (!order) {
         const res = await fetch('/api/orders', {
           method: 'POST',
@@ -324,7 +329,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         if (!res.ok) throw new Error((await res.json()).error || '发布失败');
         setOrder((await res.json()) as OrderData);
       }
-      setDecision({ finalTotal, adjustPct, confirmedAt });
+      setDecision(savedBody.decision);
     } catch (error) { window.alert(error instanceof Error ? error.message : '保存或发布失败'); } finally {
       setConfirmBusy(false);
     }
@@ -443,9 +448,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
   const tasks = data.tasks ?? [];
   const results = data.results ?? [];
-  const done = new Set(tasks.filter(t => t.status === 'done').map(t => t.toAgent));
-  const running = new Set(tasks.filter(t => t.status === 'running').map(t => t.toAgent));
-  const failed = new Set(tasks.filter(t => t.status === 'failed').map(t => t.toAgent));
+  const delivery = buildDeliveryReport({ project: data.project, tasks, results });
   const byKind = (k: string) => results.find(r => r.kind === k)?.content as Record<string, unknown> | undefined;
 
   const plan = byKind('plan') as { rooms?: PlanRoom[]; geometry?: PlanGeometry; note?: string; warnings?: string[] } | undefined;
@@ -456,7 +459,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     matchedBy?: 'mimo' | 'rules'; summary?: string;
     products?: { id: string; name: string; category: string; imageUrl: string; officialUrl: string; room: string; reason: string }[] } | undefined;
 
-  const doneCount = STAGES.filter(s => done.has(s.key)).length;
+  const doneCount = delivery.completedStages;
   const progress = Math.round((doneCount / STAGES.length) * 100);
   const totalArea = plan?.rooms?.reduce((s, r) => s + r.area, 0) ?? 0;
   const activeSceneModel: SceneModel | undefined = customGeom
@@ -530,10 +533,15 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   // 用户补充/确认后恢复等待中的任务（reask_user → 续跑流水线）
   const handleResume = async () => {
     try {
-      await fetch(`/api/projects/${id}/resume`, { method: 'POST' });
+      const resumed = await fetch(`/api/projects/${id}/resume`, { method: 'POST' });
+      if (!resumed.ok) {
+        const body = await resumed.json();
+        throw new Error(body.error || '恢复失败，请重试');
+      }
       const res = await fetch('/api/projects/' + id);
-      if (res.ok) setData(await res.json());
-    } catch { /* ignore */ }
+      if (!res.ok) throw new Error('状态刷新失败，请重新加载项目');
+      setData(await res.json());
+    } catch (error) { window.alert(error instanceof Error ? error.message : '恢复失败，请重试'); }
   };
 
   // 删除项目（业主动作，两级确认后执行）：级联清理任务/结果/订单/投标/合同，返回工作台
@@ -634,18 +642,20 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       {/* 阶段进度轨：克制的建筑感时间轴，替代卡通数字员工流水线 */}
       <div className="stage-rail" style={{ marginTop: 24 }}>
         {STAGES.map((s, i) => {
-          const status = done.has(s.key) ? 'done' : running.has(s.key) ? 'running' : failed.has(s.key) ? 'failed' : 'pending';
+          const status = delivery.stages[i].status;
           return (
             <div key={s.key} className={`stage-step ${status}`}>
               <div className="stage-marker">{status === 'done' ? '✓' : i + 1}</div>
               <span className="stage-name">{s.label}</span>
               <span className="stage-note">
-                {status === 'done' ? '已完成' : status === 'running' ? '进行中' : status === 'failed' ? '需处理' : '待开始'}
+                {DELIVERY_LABEL[status]}
               </span>
             </div>
           );
         })}
       </div>
+
+      <DeliveryEvidence report={delivery} />
 
       {/* 项目概要：单块面板 + 细分隔线元数据，替代四张大圆角统计卡 */}
       <section className="project-brief">
@@ -654,7 +664,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             <div className="brief-eyebrow">PROJECT BRIEF · 项目概要</div>
             <h2 className="brief-heading">
               {data.project.area ? `${data.project.area}㎡` : ''}{data.project.style}住宅
-              <em>，{progress >= 100 ? '设计流程已全部完成' : `设计流程进行至 ${progress}%`}</em>
+              <em>，{progress >= 100 ? '成果齐备，待人工复核' : `本轮交付齐备度 ${progress}%`}</em>
             </h2>
           </div>
           <div className="brief-progress">
@@ -1022,7 +1032,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           <div className="panel-title">
             <div className="accent-bar" />
             费用计算 · 材料清单与报价工期
-            <small>约 {quote.weeks} 周 · 报价师「小算」</small>
+            <small>约 {quote.weeks} 周 · 报价师「小算」· 规则估算</small>
           </div>
           <div className="swatch-row" style={{ marginTop: -2, marginBottom: 16 }}>
             <span>材料意向</span>
@@ -1088,14 +1098,14 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
               {decision ? (
                 <div className="review-confirmed">
                   <span>✓ 已最终确认</span>
-                  <p>确认价 ¥{decision.finalTotal.toLocaleString()} · {decision.confirmedAt.slice(0, 10)} · 已自动发布到接单市场</p>
+                  <p>确认价 ¥{decision.finalTotal.toLocaleString()} · {decision.confirmedAt.slice(0, 10)} · {order ? '已有项目订单，合同以冻结版本为准' : '确认已保存，订单状态刷新中'}</p>
                 </div>
               ) : (
                 <>
-                  <button className="btn btn-primary review-btn" disabled={confirmBusy} onClick={() => void finalConfirm()}>
+                  <button className="btn btn-primary review-btn" disabled={confirmBusy || !delivery.readyForReview} onClick={() => void finalConfirm()}>
                     {confirmBusy ? '确认中…' : '✓ 最终确认方案'}
                   </button>
-                  <p>可先在上方对话修改房间效果；确认后自动发布到接单市场。</p>
+                  <p>{delivery.readyForReview ? '可先在上方对话修改房间效果；确认后自动发布到接单市场。' : '请先补齐本轮成果并完成质检，再确认方案；历史成果不能代替本轮交付。'}</p>
                 </>
               )}
             </div>
@@ -1181,6 +1191,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         </div>
 
         {/* 任务流转链：真实 fromAgent → toAgent */}
+        <p className="wf-muted">交接链保留全部历史任务；本轮是否齐备，以交付面板和最新任务为准。</p>
         {tasks.length > 0 && (
           <div className="flow-strip">
             <div className="flow-strip-label">任务流转 · TASK HANDOFF</div>
@@ -1220,8 +1231,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             const a = agentOf(s.key);
             // 以该智能体最新一次任务为准：重跑后不再显示旧任务的状态
             const task = data.tasks.filter(t => t.toAgent === s.key).sort((x, y) => y.id - x.id)[0];
-            const status = !task ? 'pending' : task.status === 'done' ? 'done' : task.status === 'running' ? 'running'
-              : task.status === 'failed' ? 'failed' : task.status === 'waiting_user' ? 'waiting' : task.status === 'escalated' ? 'escalated' : 'pending';
+            const evidence = delivery.stages[i];
+            const status = evidence.status === 'waiting_user' ? 'waiting' : evidence.status;
             return (
               <div key={s.key} className={`record-row ${status}`}>
                 <div className="record-idx">{String(i + 1).padStart(2, '0')}</div>
@@ -1232,14 +1243,12 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                     <span>　{a.name} · {a.role}</span>
                   </div>
                   <div className="record-sub">
-                    {status === 'done' ? '该阶段已完成' : status === 'running' ? '正在执行，请稍候' : status === 'failed' ? '执行失败，等待处理'
-                      : status === 'waiting' ? `等待您补充：${String(task?.output?.ask ?? task?.output?.exception?.detail ?? '请补充信息后继续')}`
-                      : status === 'escalated' ? '已转平台人工处理' : task ? '排队中' : '等待前序阶段完成'}
+                    {evidence.nextAction}
                     {task && <em>Task #{task.id}</em>}
                   </div>
                 </div>
                 <div className={`record-status ${status}`}>
-                  {status === 'done' ? '✓ 已完成' : status === 'running' ? '● 执行中' : status === 'failed' ? '✕ 失败' : status === 'waiting' ? '⏳ 待补充' : status === 'escalated' ? '⚠ 人工处理' : '○ 等待中'}
+                  {DELIVERY_LABEL[evidence.status]}
                 </div>
               </div>
             );

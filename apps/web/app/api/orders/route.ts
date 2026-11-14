@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createOrder, getProject, getResult, getUser, listOrdersByHomeowner, listOrdersByCompany, listOpenOrders } from '@i-renovation/shared';
+import { createOrder, getProject, getOrderByProject, listResults, listTasks, buildDeliveryReport, getUser, listOrdersByHomeowner, listOrdersByCompany, listOpenOrders } from '@i-renovation/shared';
 import { forbidden, requireSession } from '@/lib/auth';
 
 export async function POST(req: Request) {
@@ -11,9 +11,14 @@ export async function POST(req: Request) {
     // 只能为自己的项目发布订单
     const project = await getProject(projectId);
     if (!project || project.homeownerId !== s.uid) return forbidden();
-    const qa = (await getResult(projectId, 'qa'))?.content as { passed?: boolean } | undefined;
-    if (!qa?.passed) return NextResponse.json({ error: '请先完成设计质检' }, { status: 409 });
-    if (!(await getResult(projectId, 'decision'))) return NextResponse.json({ error: '请先确认设计与报价' }, { status: 409 });
+    // Existing orders are historical records; retries must not create or rewrite an order.
+    const existing = await getOrderByProject(projectId);
+    if (existing) return NextResponse.json(existing);
+    const [tasks, results] = await Promise.all([listTasks(projectId), listResults(projectId)]);
+    const report = buildDeliveryReport({ project, tasks, results });
+    if (!report.readyForReview) return NextResponse.json({ error: '本轮成果尚未齐备或质检已过期，请先补齐成果并重新质检' }, { status: 409 });
+    const decision = results.filter(r => r.kind === 'decision').at(-1)?.content as { deliveryTaskId?: number } | undefined;
+    if (!decision || decision.deliveryTaskId !== report.stages[3].taskId) return NextResponse.json({ error: '请先重新确认当前一轮的设计与报价' }, { status: 409 });
     const homeownerId = s.uid;
 
     const order = await createOrder({ projectId, homeownerId, status: 'open' });

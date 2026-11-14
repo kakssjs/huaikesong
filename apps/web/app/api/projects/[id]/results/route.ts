@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { saveResult, upsertResult, listResults, getResult } from '@i-renovation/shared';
+import { saveResult, upsertResult, listResults, listTasks, getProject, buildDeliveryReport } from '@i-renovation/shared';
 import { canEditProject, canViewProject, forbidden, requireSession } from '@/lib/auth';
 import { validateSceneModel, type SceneModel } from '@i-renovation/shared/scene3d';
 
@@ -21,15 +21,21 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
     if (kind === 'scene_model' && !validateSceneModel(body.content as SceneModel).ok) return NextResponse.json({ error: '3D 场景数据无效' }, { status: 400 });
     if (kind === 'decision') {
-      const quote = (await getResult(projectId, 'quote'))?.content as { total?: number } | undefined;
+      const project = await getProject(projectId);
+      if (!project) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
+      const [tasks, results] = await Promise.all([listTasks(projectId), listResults(projectId)]);
+      const report = buildDeliveryReport({ project, tasks, results });
+      if (!report.readyForReview) return NextResponse.json({ error: '本轮成果尚未齐备或质检已过期，请先补齐成果并重新质检' }, { status: 409 });
+      const quote = report.artifacts.find(a => a.kind === 'quote')?.content as { total?: number } | undefined;
       const decision = body.content as { adjustPct?: number };
       const adjust = Number(decision.adjustPct ?? 0);
       if (!quote?.total || !Number.isFinite(adjust) || Math.abs(adjust) > 50) return NextResponse.json({ error: '请先完成有效报价，调整幅度应在正负 50% 内' }, { status: 400 });
-      body.content = { finalTotal: Math.round(quote.total * (1 + adjust / 100)), adjustPct: adjust, confirmedAt: new Date().toISOString() };
+      body.content = { finalTotal: Math.round(quote.total * (1 + adjust / 100)), adjustPct: adjust, confirmedAt: new Date().toISOString(), deliveryTaskId: report.stages[3].taskId };
+      body.upsert = true;
     }
     if (body.upsert) await upsertResult(projectId, kind, body.content);
     else await saveResult(projectId, kind, body.content);
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, ...(kind === 'decision' ? { decision: body.content } : {}) });
   } catch {
     return NextResponse.json({ error: '保存失败' }, { status: 400 });
   }

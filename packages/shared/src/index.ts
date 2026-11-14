@@ -1,6 +1,7 @@
 export * from './db';
 export * from './price';
 export * from './plan';
+export * from './delivery';
 
 // 共享类型：Agent 定义、任务交接协议、异常处理规则（对应方案 §3.2–3.4）
 export type AgentName =

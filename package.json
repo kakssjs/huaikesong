@@ -7,11 +7,12 @@
     "packages/*"
   ],
   "scripts": {
+    "opc:materials": "node scripts/export-opc-materials.cjs",
     "dev": "npm run dev -w apps/web",
     "dev:worker": "npm run dev -w apps/worker",
     "build": "npm run build -w apps/web && npm run build -w apps/worker",
     "typecheck": "tsc -b",
-    "test": "node --test scripts/regression.cjs && node --test scripts/workflow.test.cjs && node --test scripts/contract-agent.test.cjs && node --test scripts/workflow-ui.test.cjs"
+    "test": "node --test scripts/regression.cjs && node --test scripts/workflow.test.cjs && node --test scripts/contract-agent.test.cjs && node --test scripts/workflow-ui.test.cjs && node --test scripts/delivery.test.cjs && node --test scripts/price.test.cjs"
   },
   "engines": {
     "node": ">=24"

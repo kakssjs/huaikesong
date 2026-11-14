@@ -1,0 +1,68 @@
+'use client';
+
+import { useState } from 'react';
+import type { buildDeliveryReport, DeliveryStatus } from '@i-renovation/shared/delivery';
+
+export const DELIVERY_LABEL: Record<DeliveryStatus, string> = {
+  pending: '待开始', running: '进行中', done: '可复核', failed: '执行失败',
+  waiting_user: '待补充', escalated: '待人工处理', stale: '待重新交付', partial: '交付不完整', blocked: '前序待处理',
+};
+
+export default function DeliveryEvidence({ report }: { report: ReturnType<typeof buildDeliveryReport> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [rechecking, setRechecking] = useState(false);
+  const [notice, setNotice] = useState('');
+  async function recheck() {
+    setRechecking(true); setError(''); setNotice('');
+    try {
+      const res = await fetch(`/api/projects/${report.project.id}/recheck`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: '交付面板发起最新成果复检' }) });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || '复检提交失败');
+      setNotice(`复检已提交，等待执行 · Task #${body.taskId}`);
+    } catch (e) { setError(e instanceof Error ? e.message : '复检提交失败'); }
+    finally { setRechecking(false); }
+  }
+  async function download() {
+    setBusy(true); setError('');
+    try {
+      const res = await fetch(`/api/projects/${report.project.id}/delivery?download=1`, { cache: 'no-store' });
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(res.status === 403 ? '完整交付记录仅供业主本人和平台下载' : body.error || '下载失败，请重试');
+      }
+      const url = URL.createObjectURL(await res.blob());
+      const link = document.createElement('a');
+      link.href = url; link.download = `yushe-project-${report.project.id}-delivery.json`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) { setError(e instanceof Error ? e.message : '下载失败，请重试'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <section className="panel delivery-evidence" aria-labelledby="delivery-evidence-title">
+      <div className="delivery-heading">
+        <div>
+          <h2 id="delivery-evidence-title">本轮交付与人工复核</h2>
+          <p>{report.readyForReview ? '四个环节的任务与成果已齐备，请逐项人工复核。' : '交付尚未齐备，请先处理下面的待办；历史成果仍可查看。'}</p>
+        </div>
+        <button type="button" className="btn" onClick={() => void download()} disabled={busy}>{busy ? '正在下载…' : '下载交付记录'}</button>
+      </div>
+      {error && <p role="alert" className="delivery-error">{error}</p>}
+      {notice && <p role="status">{notice}</p>}
+      <ol className="delivery-stages">
+        {report.stages.map(stage => (
+          <li key={stage.key}>
+            <div className="delivery-stage-title"><strong>{stage.label}</strong><span className={stage.status === 'done' ? 'tag tag-green' : 'tag'}>{DELIVERY_LABEL[stage.status]}</span></div>
+            <p>{stage.deliverable}</p>
+            <small>{stage.execution}</small>
+            <p className="delivery-action">{stage.nextAction}{stage.taskId !== null && <small> · Task #{stage.taskId}</small>}</p>
+          </li>
+        ))}
+      </ol>
+      <button type="button" className="btn" disabled={rechecking} onClick={() => void recheck()}>{rechecking ? '正在提交…' : '重新质检当前成果'}</button>
+      <p className="wf-muted">可复核表示当前任务与成果满足基础检查；方案、价格、合同签署和施工验收仍由相关人员确认。下载包含已保存成果，请由业主决定分享范围。</p>
+      <a href="/opc">查看团队岗位与服务说明 →</a>
+    </section>
+  );
+}

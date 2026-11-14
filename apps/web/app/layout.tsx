@@ -21,6 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <span className="tag tag-brand">OPC</span>
           </Link>
           <nav style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+            <Link href="/opc" className="btn btn-ghost" style={{ fontSize: 12, padding: '6px 14px' }}>团队与服务</Link>
             <Link href="/furniture" className="btn btn-ghost" style={{ fontSize: 12, padding: '6px 14px' }}>
               家具商城
             </Link>

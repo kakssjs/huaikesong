@@ -9,6 +9,10 @@
     "sharp": "0.35.5"
   },
   "exports": {
+    "./delivery": {
+      "types": "./src/delivery.ts",
+      "default": "./src/delivery.ts"
+    },
     "./workflow": {
       "types": "./src/workflow.ts",
       "default": "./src/workflow.ts"

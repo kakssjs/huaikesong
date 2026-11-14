@@ -72,6 +72,7 @@ export default function Home() {
           ))}
         </div>
         <p className="lead">签约专员接续已确认的方案与报价，整理合同草案、阶段计划和待确认事项，作为团队业务链的延伸。</p>
+        <a className="btn" href="/opc">了解岗位、服务与交付标准 →</a>
       </section>
 
       <section className="home-section home-features">

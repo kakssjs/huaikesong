@@ -82,16 +82,18 @@ const cite = (r: PriceReference) => `${r.sourceName}（${r.publishedAt} 发布�
  * 不加风格系数时，每平米总价正好等于来源的全包区间中值。refs 传数据库里的参考价；缺哪条就用 PRICE_REFERENCES 里的同一条。
  */
 export function calcQuote(plan: PlanRoom[], style: string, refs: PriceReference[] = PRICE_REFERENCES) {
+  // Keep the displayed quantities and the amounts based on exactly the same precision.
+  plan = plan.map(room => ({ ...room, area: Math.round(room.area * 100) / 100 }));
   const pick = (id: string) => refs.find(r => r.id === id) ?? PRICE_REFERENCES.find(r => r.id === id)!;
   const half = pick('hz-half-package');
   const full = pick('hz-full-package');
   const design = pick('hz-design-fee');
   const factor = STYLE_FACTOR[style] ?? 1.0;
-  const totalArea = plan.reduce((s, r) => s + r.area, 0);
+  const totalArea = Math.round(plan.reduce((s, r) => s + r.area, 0) * 100) / 100;
   const items: QuoteItem[] = [];
 
   const laborUnit = Math.round(mid(half) * factor);
-  items.push({ item: '人工+辅料（半包）', qty: Math.round(totalArea), unit: '㎡', price: laborUnit, total: Math.round(totalArea * laborUnit), source: cite(half) });
+  items.push({ item: '人工+辅料（半包）', qty: totalArea, unit: '㎡', price: laborUnit, total: Math.round(totalArea * laborUnit), source: cite(half) });
 
   // 整屋主材均价（元/㎡），按房间权重分摊；权重按面积归一，保证整屋主材合计不变
   const materialAvg = Math.max(0, mid(full) - mid(half) - mid(design));
@@ -100,7 +102,7 @@ export function calcQuote(plan: PlanRoom[], style: string, refs: PriceReference[
   const materialSource = `按${full.sourceName}全包中值减半包与设计费得出整屋主材均价 ${Math.round(materialAvg)} 元/㎡，再按平台房间权重分摊`;
   for (const r of plan) {
     const unit = Math.round(materialAvg * (totalArea / weightedArea) * weightOf(r) * factor);
-    items.push({ item: `${r.name}主材`, qty: Math.round(r.area), unit: '㎡', price: unit, total: Math.round(r.area * unit), source: materialSource });
+    items.push({ item: `${r.name}主材`, qty: r.area, unit: '㎡', price: unit, total: Math.round(r.area * unit), source: materialSource });
   }
 
   const designUnit = Math.round(mid(design));
@@ -109,12 +111,14 @@ export function calcQuote(plan: PlanRoom[], style: string, refs: PriceReference[
   const total = items.reduce((s, i) => s + i.total, 0);
   // 工期：半包约 2㎡/天 + 湿区晾晒
   const weeks = Math.max(4, Math.ceil(totalArea / 12) + 2);
-  const schedule = [
-    { phase: '拆改+水电', weeks: Math.ceil(weeks * 0.25) },
-    { phase: '瓦工+防水', weeks: Math.ceil(weeks * 0.3) },
-    { phase: '木工+油漆', weeks: Math.ceil(weeks * 0.3) },
-    { phase: '安装+验收', weeks: Math.ceil(weeks * 0.15) },
-  ];
+  // Allocate whole weeks with a one-week minimum per phase, without rounding every phase up.
+  const phases = ['拆改+水电', '瓦工+防水', '木工+油漆', '安装+验收'];
+  const extra = [0.25, 0.3, 0.3, 0.15].map(weight => (weeks - phases.length) * weight);
+  const durations = extra.map(value => 1 + Math.floor(value));
+  const remainder = weeks - durations.reduce((sum, value) => sum + value, 0);
+  const ranking = extra.map((value, index) => ({ index, fraction: value - Math.floor(value) })).sort((a, b) => b.fraction - a.fraction || a.index - b.index);
+  for (let i = 0; i < remainder; i++) durations[ranking[i].index]++;
+  const schedule = phases.map((phase, i) => ({ phase, weeks: durations[i] }));
 
   const newest = [half, full, design].map(r => r.retrievedAt).sort().at(-1)!;
   // 参考价每月更新一次；超过 45 天没更新就在报价里写明，不让旧价格冒充当前价
@@ -123,6 +127,6 @@ export function calcQuote(plan: PlanRoom[], style: string, refs: PriceReference[
   return {
     items, total, weeks, schedule, currency: 'CNY',
     priceBasis: { city: half.city, retrievedAt: newest, ageDays, stale: ageDays > 45, referenceIds: [half.id, full.id, design.id], styleFactor: factor },
-    note: `AI 生成报价，仅供参考；以签约报价单为准。单价依据网站公开的${half.city}装修参考价（${newest} 采集），风格系数 ×${factor} 为平台经验值${stale}`,
+    note: `按参考价格与工程量规则估算，仅供参考；以签约报价单为准。单价依据网站公开的${half.city}装修参考价（${newest} 采集），风格系数 ×${factor} 为平台经验值${stale}`,
   };
 }

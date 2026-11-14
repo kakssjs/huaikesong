@@ -2,6 +2,21 @@
 // 新增界面文字时，在这里补上对应英文；没有收录的文字保持中文显示。
 import { WORKFLOW_EN } from './i18n-workflow';
 export const EN: Record<string, string> = {
+  '团队与服务': 'Team & service',
+  '了解岗位、服务与交付标准 →': 'Explore roles, services and delivery standards →',
+  '本轮交付与人工复核': 'Current delivery & human review',
+  '下载交付记录': 'Download delivery record',
+  '正在下载…': 'Downloading…',
+  '可复核': 'Ready for review',
+  '待重新交付': 'Awaiting new delivery',
+  '交付不完整': 'Incomplete delivery',
+  '前序待处理': 'Upstream action needed',
+  '成果齐备，待人工复核': 'Artifacts available; awaiting human review',
+  '四个环节的任务与成果已齐备，请逐项人工复核。': 'Tasks and artifacts for all four stages are available. Please review them individually.',
+  '交付尚未齐备，请先处理下面的待办；历史成果仍可查看。': 'Delivery is incomplete. Address the actions below; historical artifacts remain available.',
+  '查看团队岗位与服务说明 →': 'View team roles and service details →',
+  '可复核表示当前任务与成果满足基础检查；方案、价格、合同签署和施工验收仍由相关人员确认。下载包含已保存成果，请由业主决定分享范围。': 'Ready for review means current tasks and artifacts meet basic checks. People still confirm designs, prices, contracts and site acceptance. Downloads include saved artifacts; the owner decides what to share.',
+  '交接链保留全部历史任务；本轮是否齐备，以交付面板和最新任务为准。': 'The handoff chain retains task history. Use the current delivery panel and latest tasks to assess readiness.',
   '高': 'High', '中': 'Medium', '低': 'Low',
   '户型识别': 'Floor plan reading', '二维设计': '2D design', '3D渲染': '3D rendering', '报价工期': 'Quote & schedule',
   '装修队匹配': 'Contractor matching', '增长获客': 'Growth', '顾问客服': 'Advisor', '质检': 'QA', '调度器': 'Orchestrator',

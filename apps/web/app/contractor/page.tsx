@@ -693,6 +693,7 @@ export default function ContractorPortal() {
                         <div className="accent-bar" />
                         我的竞价记录
                       </div>
+                      <div className="wf-table-wrap">
                       <table className="data-table">
                         <thead>
                           <tr>
@@ -725,6 +726,7 @@ export default function ContractorPortal() {
                           ))}
                         </tbody>
                       </table>
+                      </div>
                       <p className="wf-muted">投标仅展示预估，尚未收费；新合同以三方签约费率及成功阶段结算为准。历史投标测算保留原口径。</p>
                     </div>
                   )}

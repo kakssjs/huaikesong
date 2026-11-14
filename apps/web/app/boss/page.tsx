@@ -251,6 +251,7 @@ export default function BossConsole() {
             ))}
           </div>
           <div className="panel">
+            <div className="wf-table-wrap">
             <table className="data-table">
               <thead>
                 <tr><th>Task</th><th>项目</th><th>交接</th><th>状态</th><th>重试</th><th>Tokens</th><th>时间</th></tr>
@@ -274,6 +275,7 @@ export default function BossConsole() {
                 )}
               </tbody>
             </table>
+            </div>
           </div>
         </>
       )}
@@ -339,6 +341,7 @@ export default function BossConsole() {
             企业会员为独立客户资源服务，会员收款与合同工程款、履约服务费分别记录；权益以支付服务查询确认为准。
           </p>
           <div className="panel">
+            <div className="wf-table-wrap">
             <table className="data-table">
               <thead><tr><th>公司</th><th>套餐</th><th>付费周期</th><th>入驻费</th><th>支付凭证</th><th>状态</th><th>操作</th></tr></thead>
               <tbody>
@@ -360,6 +363,7 @@ export default function BossConsole() {
                 )}
               </tbody>
             </table>
+            </div>
           </div>
         </>
       )}
@@ -372,6 +376,7 @@ export default function BossConsole() {
           </p>
           {userMsg && <p role="status" style={{ fontSize: 13, marginBottom: 12 }}>{userMsg}</p>}
           <div className="panel">
+            <div className="wf-table-wrap">
             <table className="data-table">
               <thead><tr><th>ID</th><th>身份</th><th>姓名 / 公司</th><th>手机号</th><th>邮箱</th><th>项目</th><th>注册时间</th><th>操作</th></tr></thead>
               <tbody>
@@ -406,6 +411,7 @@ export default function BossConsole() {
                 )}
               </tbody>
             </table>
+            </div>
           </div>
         </>
       )}
@@ -422,6 +428,7 @@ export default function BossConsole() {
             <div className="stat-card"><div className="label">待结算</div><div className="value orange">{(data?.commissionSettlements ?? []).filter(x => x.status === 'pending').length}</div></div>
           </div>
           <div className="panel">
+            <div className="wf-table-wrap">
             <table className="data-table">
               <thead><tr><th>订单</th><th>装修队</th><th>成交额</th><th>预估成本</th><th>利润</th><th>历史平台分成</th><th>净利</th><th>归档状态</th></tr></thead>
               <tbody>
@@ -438,6 +445,7 @@ export default function BossConsole() {
                 )}
               </tbody>
             </table>
+            </div>
           </div>
         </>
       )}
@@ -449,6 +457,7 @@ export default function BossConsole() {
             公司确认 → 业主接受或议价 → 三方合同演示签署 → 施工验收 → 模拟分期结算。平台为合同当事方，独立争议处理结果另行记录；模拟余额不代表真实托管。
           </p>
           <div className="panel">
+            <div className="wf-table-wrap">
             <table className="data-table">
               <thead>
                 <tr><th>订单</th><th>项目</th><th>状态</th><th>报价（万元）</th><th>工期</th><th>匹配度</th><th>合同履约</th></tr>
@@ -472,6 +481,7 @@ export default function BossConsole() {
                 )}
               </tbody>
             </table>
+            </div>
           </div>
         </>
       )}

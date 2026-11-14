@@ -16,3 +16,4 @@ scripts/.workflow-regression/
 scripts/.workflow-test/
 .demo-data/
 scripts/.browser-acceptance/
+scripts/.chain-acceptance/

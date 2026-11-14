@@ -10,7 +10,7 @@ import {
   getMembershipTier, evaluateBidRisk, explainFairBidding,
   type PlanRoom, type PlanGeometry, type QuoteItem,
 } from '@i-renovation/shared';
-import { callMimo, recognizeFloorPlan } from './mimo';
+import { callLLM, recognizeFloorPlan } from './llm';
 import { XIAOMI_SMART_HOME_PRODUCTS, getMarketplaceProduct } from '@i-renovation/shared/marketplace';
 import type { OpeningHint } from '@i-renovation/shared/plan';
 import { generateImage } from './agnes';
@@ -128,11 +128,11 @@ async function matchBids(projectId: number, style: string) {
 }
 
 /**
- * 第二智能体「小桥」= MiMo：读业主需求、户型、报价和每份真实投标，给装修队排序并写出理由，
+ * 第二智能体「小桥」= 大模型：读业主需求、户型、报价和每份真实投标，给装修队排序并写出理由，
  * 再从家具商城目录里为各房间挑选相关产品。硬条件（已审核、有效会员）仍由代码先筛，
- * MiMo 只能在这批真实投标和真实商品里选，返回的 id 不在名单里就丢弃。MiMo 不可用时返回 null，由规则分兜底。
+ * 模型只能在这批真实投标和真实商品里选，返回的 id 不在名单里就丢弃。模型不可用时返回 null，由规则分兜底。
  */
-async function mimoMatch(
+async function llmMatch(
   project: { name: string; style: string; area?: string | null; budget: string; needs?: string | null },
   rooms: PlanRoom[], quoteTotal: number, bids: BidRow[], contractors: MatchedContractor[],
 ) {
@@ -158,7 +158,7 @@ async function mimoMatch(
     JSON.stringify(catalog),
   ].join('\n');
   try {
-    const { text, tokensUsed } = await callMimo([{ role: 'user', content: prompt }], { maxTokens: 2500, noThinking: true });
+    const { text, tokensUsed } = await callLLM([{ role: 'user', content: prompt }], { maxTokens: 2500, noThinking: true });
     const json = JSON.parse(text.replace(/```json|```/g, '').trim()) as {
       ranking?: { bidId?: number; score?: number; reason?: string }[];
       products?: { id?: string; room?: string; reason?: string }[]; summary?: string;
@@ -180,7 +180,7 @@ async function mimoMatch(
       });
     return { ranking, products, summary: String(json.summary ?? '').slice(0, 300), tokensUsed };
   } catch (e) {
-    console.warn('[matcher] MiMo 匹配失败，改用规则分：', (e as Error).message);
+    console.warn('[matcher] 大模型匹配失败，改用规则分：', (e as Error).message);
     return null;
   }
 }
@@ -243,7 +243,7 @@ async function runAgent(task: { id: number; projectId: number; toAgent: string; 
         // 归一化坐标 → 按原图宽高换成像素，保持房间比例（拿不到尺寸时按 4:3）
         const size = imageSize(bytes) ?? { width: 1200, height: 900 };
         rects = result.rooms.map(r => ({ name: r.name, x: r.x * size.width, y: r.y * size.height, w: r.w * size.width, d: r.d * size.height, openings: r.openings }));
-        source = 'mimo';
+        source = 'llm';
         recognizedRuns = result.runs;
       }
       // 像素 → 米：优先按申报总面积校准，否则 80px≈1m（与画板「按此图生成 3D」同一换算）
@@ -257,8 +257,8 @@ async function runAgent(task: { id: number; projectId: number; toAgent: string; 
         rooms: plan,
         geometry,
         source,
-        confidence: source === 'mimo' && recognizedRuns < 2 ? 'unverified' : 'high',
-        note: source === 'mimo'
+        confidence: source === 'llm' && recognizedRuns < 2 ? 'unverified' : 'high',
+        note: source === 'llm'
           ? `按上传户型图识别出的 ${plan.length} 间房建模（${recognizedRuns > 1 ? `${recognizedRuns} 次识别取多数一致` : '仅 1 次识别，未经互相印证'}，保留房间位置），尺寸按申报面积换算，以现场量房为准`
           : `按你在画板上识别/手绘的 ${plan.length} 间房建模（保留房间位置），尺寸以现场量房为准`,
         warnings: geometry.warnings,
@@ -328,11 +328,11 @@ async function runAgent(task: { id: number; projectId: number; toAgent: string; 
     case 'matcher': {
       // —— 匹配智能体：等「业主确认发布 + 装修公司发布数据（投标）」后触发，基于真实投标数据匹配 ——
       const { order, bids, contractors: ruleRanked } = await matchBids(task.projectId, project.style);
-      // 第二智能体：MiMo 在规则筛出的真实投标里排序并写理由，同时挑选相关商品；失败时沿用规则分
+      // 第二智能体：大模型在规则筛出的真实投标里排序并写理由，同时挑选相关商品；失败时沿用规则分
       const planRow = await getResult(task.projectId, 'plan');
       const rooms = (planRow?.content as { rooms?: PlanRoom[] } | undefined)?.rooms ?? [];
       const quoteTotal = Number(((await getResult(task.projectId, 'quote'))?.content as { total?: number } | undefined)?.total) || 0;
-      const ai = ruleRanked.length ? await mimoMatch(project, rooms, quoteTotal, bids as BidRow[], ruleRanked) : null;
+      const ai = ruleRanked.length ? await llmMatch(project, rooms, quoteTotal, bids as BidRow[], ruleRanked) : null;
       const contractors = ai
         ? ruleRanked.map(c => ({ ...c, ruleScore: c.score, score: ai.ranking.get(c.bidId)!.score, reason: ai.ranking.get(c.bidId)!.reason, ruleReason: c.reason }))
             .sort((x, y) => y.score - x.score)
@@ -352,8 +352,8 @@ async function runAgent(task: { id: number; projectId: number; toAgent: string; 
       }
       const match = {
         contractors, source: 'bids', bidCount: bids.length,
-        matchedBy: ai ? 'mimo' : 'rules',
-        summary: ai?.summary || (ai ? '' : 'MiMo 暂不可用，本次按规则评分匹配'),
+        matchedBy: ai ? 'llm' : 'rules',
+        summary: ai?.summary || (ai ? '' : '大模型暂不可用，本次按规则评分匹配'),
         products: ai?.products ?? [],
         pushedAt: new Date().toISOString(),
         note: '采用密封竞价和综合匹配：不公开竞争对手报价，不以最低价为唯一标准；综合资质、合理报价、工期、风格与服务能力，规避低价恶性竞争。',
@@ -497,7 +497,7 @@ async function tick() {
       const { key, rule } = classifyException(e, task.toAgent);
       const detail = (e as Error).message ?? String(e);
       if (rule.action === 'retry' && task.retry < rule.maxRetries) {
-        await failTask(task.id, task.retry + 1); // 回 pending 重试（mimo_timeout ≤3 次）
+        await failTask(task.id, task.retry + 1); // 回 pending 重试（llm_timeout ≤3 次）
         console.warn(`[runner] task ${task.id} retry ${task.retry + 1}/${rule.maxRetries} (${key})`);
       } else if (rule.action === 'retry') {
         await escalateTask(task.id, { exception: exceptionInfo(key, `重试 ${rule.maxRetries} 次仍失败：${detail}`) });

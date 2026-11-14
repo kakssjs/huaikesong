@@ -286,13 +286,13 @@ test('existing signed contracts are read-only archives and never get synthetic d
 
 function compileWebFile(sourceName,targetName,replacements={}) {
   let output=ts.transpileModule(fs.readFileSync(path.join(__dirname,'../apps/web',sourceName),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
-  for(const [from,to]of Object.entries({'@i-renovation/shared':'./index.js','@i-renovation/shared/workflow':'./workflow.js','@i-renovation/shared/workflow-db':'./workflow-db.js','@/lib/auth':'./auth.js','@/lib/contract-agent':'./contract-agent.js','@/lib/mimo':'./no-network.js',...replacements}))output=output.replaceAll(`require("${from}")`,`require("${to}")`);
+  for(const [from,to]of Object.entries({'@i-renovation/shared':'./index.js','@i-renovation/shared/workflow':'./workflow.js','@i-renovation/shared/workflow-db':'./workflow-db.js','@/lib/auth':'./auth.js','@/lib/contract-agent':'./contract-agent.js','@/lib/llm':'./no-network.js',...replacements}))output=output.replaceAll(`require("${from}")`,`require("${to}")`);
   fs.writeFileSync(path.join(dir,targetName),output);return require(path.join(dir,targetName));
 }
 test('actual HTTP handlers enforce session, contract isolation, private seal, legacy write rejection and honest no-model status', async () => {
   process.env.SESSION_SECRET='isolated-workflow-secret-at-least-32-characters';
-  delete process.env.MIMO_API_KEY;delete process.env.DEEPSEEK_API_KEY;
-  fs.writeFileSync(path.join(dir,'no-network.js'),'exports.callMimo = async () => { throw new Error("TEST: external model must never be called"); };');
+  delete process.env.LLM_API_KEY;
+  fs.writeFileSync(path.join(dir,'no-network.js'),'exports.callLLM = async () => { throw new Error("TEST: external model must never be called"); };');
   const auth=compileWebFile('lib/auth.ts','auth.js');compileWebFile('lib/contract-agent.ts','contract-agent.js');
   const route=compileWebFile('app/api/orders/[id]/workflow/route.ts','workflow-route.js');
   const oldRoute=compileWebFile('app/api/orders/[id]/contract/route.ts','old-contract-route.js');

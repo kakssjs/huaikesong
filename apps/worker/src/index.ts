@@ -4,7 +4,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { EXCEPTION_RULES, HANDOFF_GRAPH, type AgentName, type TaskRecord } from '@i-renovation/shared';
 import { AGENTS } from './agents.js';
-import { callMimo } from './mimo.js';
+import { callLLM } from './llm.js';
 
 const connection = { url: process.env.REDIS_URL ?? 'redis://localhost:6379' };
 
@@ -21,7 +21,7 @@ async function runAgent(job: Job<TaskJob>) {
   if (!agent) throw new Error(`unknown agent: ${record.to}`);
 
   try {
-    const result = await callMimo([
+    const result = await callLLM([
       { role: 'system', content: agent.systemPrompt },
       { role: 'user', content: context },
     ]);
@@ -30,7 +30,7 @@ async function runAgent(job: Job<TaskJob>) {
     console.log(`[${record.taskId}] ${record.to} done, tokens=${result.tokensUsed}`);
     return result;
   } catch (err) {
-    const rule = EXCEPTION_RULES.mimo_timeout;
+    const rule = EXCEPTION_RULES.llm_timeout;
     if (record.retryCount < rule.maxRetries) {
       // 重试（BullMQ attempts 也可承担）
       throw err;

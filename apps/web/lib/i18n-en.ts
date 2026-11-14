@@ -248,7 +248,7 @@ export const EN: Record<string, string> = {
   'AI 生成 · 尺寸为示意，以现场量房为准': 'AI generated · sizes are indicative; measure on site',
   'AI 生成二维布局方案（施工参考）· 2D、3D、材质与导出共用同一套场景模型': 'AI 2D layout (construction reference) · 2D, 3D, materials and export share one scene model',
   '开间': 'Width', '进深': 'Depth',
-  // 线上版本独有的界面文字（付款、家具商城、老板裁决、MiMo 匹配）
+  // 线上版本独有的界面文字（付款、家具商城、老板裁决、大模型匹配）
   '结算确认失败': 'Settlement confirmation failed', '操作失败': 'Action failed', '裁决失败': 'Decision failed',
   '裁决已提交，列表刷新失败，请刷新页面': 'Decision submitted, but the list didn\'t refresh. Reload the page.',
   '任务 Token': 'Task tokens', '查看订单跟进': 'View order follow-up', '通过资质审核': 'Approve credentials', '重试任务': 'Retry task',
@@ -282,9 +282,9 @@ export const EN: Record<string, string> = {
   '根据房型图生成的各房间渲染图（': 'Room renders from the plan (', '间，AI 生成）': ' rooms, AI generated)', '效果图保存失败，请重试': 'Couldn\'t save the render, please retry',
   '历史版本恢复失败，请重试': 'Couldn\'t restore that version, please retry', '合同操作失败': 'Contract action failed', '签约失败': 'Signing failed', '3D 保存失败': 'Couldn\'t save 3D',
   '设计与报价任务提交失败，请重试': 'Couldn\'t submit the design and quote tasks, please retry', '二维设计图': '2D design', '材质保存失败': 'Couldn\'t save materials', '依据：': 'Based on: ',
-  '第二智能体「小桥」· MiMo 按真实投标匹配': 'Second agent "Xiaoqiao" · MiMo matches on real bids', '匹配师「小桥」按规则评分匹配': 'Matcher "Xiaoqiao" scores by rules',
-  '· 脱敏信息': '· anonymised', '小桥 · 匹配智能体': 'Xiaoqiao · matching agent',
-  'MiMo 阅读你的需求、户型和报价，对已审核且会员有效的装修队真实投标逐一评估排序。': 'MiMo reads your needs, plan and quote, and ranks real bids from verified contractors with active memberships.',
+  '第二智能体「小桥」· 大模型按真实投标匹配': 'Second agent "Xiaoqiao" · the LLM matches on real bids', '匹配师「小桥」按规则评分匹配': 'Matcher "Xiaoqiao" scores by rules',
+  '· 脱敏信息': '· anonymised', '小桥 · 匹配智能体': 'Xiaoqiao · matching agent', '（大模型）': ' (LLM)',
+  '大模型阅读你的需求、户型和报价，对已审核且会员有效的装修队真实投标逐一评估排序。': 'The LLM reads your needs, plan and quote, and ranks real bids from verified contractors with active memberships.',
   '基于真实投标（报价 / 工期）与资质档案打分匹配。': 'Scored on real bids (quote / duration) and credentials.', '选定装修队由你决定。': 'You choose the contractor.',
   '小桥为各房间挑选的智能家居': 'Smart-home picks for each room by Xiaoqiao', '⏳ 等待您补充：': '⏳ Waiting for you: ', '请补充信息后继续': 'Add the information to continue',
   '⚠ 已转平台人工处理': '⚠ Passed to the platform team', '等待上一步完成': 'Waiting for the previous step',

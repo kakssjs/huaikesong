@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { recognizeFloorPlan } from '@/lib/mimo';
+import { recognizeFloorPlan } from '@/lib/llm';
 import { requireSession } from '@/lib/auth';
 
 // 户型图视觉识别：图片 → 房间矩形 + 墙上的门窗（归一化 0~1 坐标）

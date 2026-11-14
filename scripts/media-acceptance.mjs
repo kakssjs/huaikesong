@@ -10,10 +10,10 @@ async function post(path, body) {
   return data;
 }
 const bytes = fs.readFileSync('/tmp/test-floorplan.png');
-const recognized = await post('/api/mimo/recognize', { image: 'data:image/png;base64,' + bytes.toString('base64'), runs: 1 });
+const recognized = await post('/api/floorplan/recognize', { image: 'data:image/png;base64,' + bytes.toString('base64'), runs: 1 });
 assert.ok(recognized.rooms.length >= 3, JSON.stringify(recognized));
 assert.ok(recognized.rooms.every(r => Number.isFinite(r.x) && Number.isFinite(r.y) && r.w > 0 && r.d > 0));
-console.log('PASS real MiMo recognition: room rectangles with valid coordinates, token usage', recognized.tokensUsed);
+console.log('PASS real LLM recognition: room rectangles with valid coordinates, token usage', recognized.tokensUsed);
 const edited = await post('/api/agnes/chat', { message: 'Change the sofa fabric to warm beige, preserve the room layout.', imageUrl: state.image.url,
   room: state.image.room, style: '现代简约' });
 assert.ok(edited.url || edited.b64_json);

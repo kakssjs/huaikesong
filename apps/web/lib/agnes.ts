@@ -1,4 +1,4 @@
-import { httpsPost } from './mimo';
+import { httpsPost } from './llm';
 // Agnes AI 图像生成客户端（官方文档端点：https://apihub.agnes-ai.com/v1/images/generations）
 const AGNES_BASE = process.env.AGNES_BASE_URL ?? 'https://apihub.agnes-ai.com';
 const AGNES_KEY = process.env.AGNES_API_KEY ?? '';

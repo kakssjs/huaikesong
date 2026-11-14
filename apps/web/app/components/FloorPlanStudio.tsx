@@ -347,7 +347,7 @@ export default function FloorPlanStudio({ projectId, totalArea, initial, onApply
     reader.readAsDataURL(file);
   }
 
-  /** 合成画布（底图+笔迹+矩形）用于 Agnes / MiMo */
+  /** 合成画布（底图+笔迹+矩形）用于 Agnes / 视觉识别 */
   function composite(): HTMLCanvasElement {
     const off = document.createElement('canvas');
     off.width = CANVAS_W;
@@ -393,7 +393,7 @@ export default function FloorPlanStudio({ projectId, totalArea, initial, onApply
     try {
       // 优先用标准平面图识别（更干净），否则用当前合成图
       const src = stdImage && stdImage.startsWith('data:') ? stdImage : compressCanvas(composite());
-      const res = await fetch('/api/mimo/recognize', {
+      const res = await fetch('/api/floorplan/recognize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: src }),

@@ -13,7 +13,7 @@ Before this change the site had a demo login:
   and every API route trusted whatever `homeownerId`, `companyId`, `role` or `signer` the page sent.
 - So anyone could sign in as anyone, open the boss console, approve contractors, read or delete
   other people's projects, bid under another company's name, and sign contracts for either side.
-- The AI routes (Agnes, MiMo) were open to anyone, so a stranger could spend the paid credits.
+- The AI routes (Agnes, LLM) were open to anyone, so a stranger could spend the paid credits.
 
 ## 2. How it works now
 
@@ -36,7 +36,7 @@ checked against it.
 | `POST /api/auth/register` | anyone; password required; signs the new user in |
 | `POST /api/auth/login`, `POST /api/auth/logout` | anyone |
 | `GET /api/auth/me` | any signed-in user; returns the account from the cookie, never the hash |
-| `POST /api/agnes/*`, `POST /api/mimo/recognize` | homeowner or boss |
+| `POST /api/agnes/*`, `POST /api/floorplan/recognize` | homeowner or boss |
 | `GET /api/boss`, `POST /api/users/[id]/verify` | boss only |
 | `GET/PATCH /api/users/[id]` | the account itself (PATCH: companies only); GET also for the boss |
 | `GET/POST /api/projects` | homeowner (own projects only; the owner is taken from the login, not the form); the boss may list by `homeownerId` |

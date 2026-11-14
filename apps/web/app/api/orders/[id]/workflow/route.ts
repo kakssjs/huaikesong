@@ -3,7 +3,7 @@ import { requireSession } from '@/lib/auth';
 import { getOrderWorkflow, actOnOrderWorkflow, recordAIReview, prepareWorkflowCommand } from '@i-renovation/shared/workflow-db';
 import { renderWorkflowHtml, validateCommand, WorkflowError, type WorkflowCommand } from '@i-renovation/shared/workflow';
 import { reviewContractTerms } from '@/lib/contract-agent';
-import { callMimo } from '@/lib/mimo';
+import { callLLM } from '@/lib/llm';
 
 const headers = { 'Cache-Control': 'no-store' };
 const activeReviews = new Map<string, ReturnType<typeof reviewContractTerms>>();
@@ -34,7 +34,7 @@ export async function POST(req:Request,ctx:{params:Promise<{id:string}>}) {
       if(view.legacyContract)throw new WorkflowError('历史合同只读保留','LEGACY_READ_ONLY',409);
       if(view.revision!==command.expectedRevision)throw new WorkflowError('版本已更新，请刷新后复核','STALE_REVISION',409);
       if(view.validation.missing.length||view.validation.errors.length)throw new WorkflowError('请先补齐合同缺项与金额校验，再主动发起模型复核','INCOMPLETE',409);
-      if(!(process.env.MIMO_BASE_URL&&process.env.MIMO_API_KEY)&&!process.env.DEEPSEEK_API_KEY) {
+      if(!process.env.LLM_API_KEY) {
         const saved=await recordAIReview(id,actor,command,{status:'not_called',mode:'rules',summary:'规则草案，模型未调用：未配置模型服务',at:new Date().toISOString()});
         return NextResponse.json({error:'规则草案，模型未调用：未配置模型服务',code:'MODEL_NOT_CONFIGURED',workflow:saved},{status:503,headers});
       }
@@ -46,7 +46,7 @@ export async function POST(req:Request,ctx:{params:Promise<{id:string}>}) {
         let pending=activeReviews.get(reviewKey);
         if(!pending) {
           pending=reviewContractTerms({area:t.area,areaBasis:t.areaBasis,style:t.style,scope:t.scope,totalCents:t.totalCents,durationDays:t.durationDays,
-            feeBps:t.feeBps,stages:t.stages.map(({name,amountCents,acceptanceCriteria})=>({name,amountCents,acceptanceCriteria})),missing:view.validation.missing,errors:view.validation.errors},callMimo);
+            feeBps:t.feeBps,stages:t.stages.map(({name,amountCents,acceptanceCriteria})=>({name,amountCents,acceptanceCriteria})),missing:view.validation.missing,errors:view.validation.errors},callLLM);
           activeReviews.set(reviewKey,pending);
         }
         review=await pending;

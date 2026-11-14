@@ -20,7 +20,7 @@ export const EXCEPTION_RULES: Record<string, ExceptionRule> = {
   render_failed:            { name: '3D/图像生成失败',     maxRetries: 2, action: 'degrade' },
   quote_mismatch:           { name: '报价漏项/数字不符',   maxRetries: 2, action: 'escalate_boss' },
   no_match:                 { name: '无装修队匹配',         maxRetries: 1, action: 'reask_user' },
-  mimo_timeout:             { name: 'MiMo API 超时/熔断',  maxRetries: 3, action: 'retry' },
+  llm_timeout:              { name: '大模型 API 超时/熔断', maxRetries: 3, action: 'retry' },
   content_violation:        { name: '输出违规',             maxRetries: 1, action: 'escalate_boss' },
   qa_fallback_exhausted:    { name: 'QA 回退超限',          maxRetries: 2, action: 'escalate_boss' },
 };
@@ -35,14 +35,14 @@ const AGENT_DEFAULT_RULE: Record<string, string> = {
 
 /**
  * 异常分类：错误信息 → EXCEPTION_RULES 规则键。
- * 超时/网络类 → mimo_timeout（重试）；图像/渲染类 → render_failed（降级）；违规 → content_violation；
+ * 超时/网络类 → llm_timeout（重试）；图像/渲染类 → render_failed（降级）；违规 → content_violation；
  * 报价类 → quote_mismatch；其余按 Agent 默认规则兜底。
  */
 export function classifyException(e: unknown, agent: string): { key: string; rule: ExceptionRule } {
   const msg = String((e as Error)?.message ?? e).toLowerCase();
   let key: string;
   if (/赌博|博彩|色情|暴力恐怖|违禁/.test(msg)) key = 'content_violation';
-  else if (/timeout|timed out|etimedout|econnreset|econnrefused|fetch failed|network|socket hang up|429|502|503|abort/.test(msg)) key = 'mimo_timeout';
+  else if (/timeout|timed out|etimedout|econnreset|econnrefused|fetch failed|network|socket hang up|429|502|503|abort/.test(msg)) key = 'llm_timeout';
   else if (/image|render|agnes|svg|canvas|webgl|texture/.test(msg)) key = 'render_failed';
   else if (/quote|mismatch|calc|报价/.test(msg)) key = 'quote_mismatch';
   else key = AGENT_DEFAULT_RULE[agent] ?? 'render_failed';

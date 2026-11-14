@@ -2,7 +2,7 @@
 // 对不上就带着具体的纠正意见重新生成（最多 maxTries 次），最后保留最接近的一张，并如实记录有没有通过。
 // 图像模型只能「大致」照着文字画，会凭空多出门窗；不核对，这些错的图就会被当成「根据户型图生成」存起来。
 import type { ExpectedWalls } from '@i-renovation/shared/plan';
-import { callMimo } from './mimo';
+import { callLLM } from './llm';
 import { generateImage, type AgnesImageResult } from './agnes';
 
 export interface RenderCheck {
@@ -50,7 +50,7 @@ export async function countOpenings(result: AgnesImageResult): Promise<ExpectedW
   try {
     const img = await loadImage(result);
     if (!img) return null;
-    const { text } = await callMimo([{ role: 'user', content: COUNT_PROMPT }], { imageBase64: img.b64, mime: img.mime, maxTokens: 400, noThinking: true });
+    const { text } = await callLLM([{ role: 'user', content: COUNT_PROMPT }], { imageBase64: img.b64, mime: img.mime, maxTokens: 400, noThinking: true });
     const j = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] ?? '') as Record<string, { windows?: unknown; doors?: unknown }>;
     const n = (v: unknown) => Math.min(9, Math.max(0, Math.round(Number(v)) || 0));
     return Object.fromEntries(WALLS.map(w => [w, { windows: n(j[w]?.windows), doors: n(j[w]?.doors) }])) as unknown as ExpectedWalls;

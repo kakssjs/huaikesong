@@ -56,7 +56,7 @@ export function buildDeliveryReport(input: { project: DeliveryProject; tasks: re
     qa: content('qa').passed === true,
   };
   const execution: Record<string, string> = {
-    floor_plan: plan.source === 'mimo' ? '模型识别 + 程序化几何换算' : plan.source === 'user_studio' ? '人工标注 + 程序化几何换算' : '来源未记录，需核对',
+    floor_plan: plan.source === 'llm' || plan.source === 'mimo' ? '模型识别 + 程序化几何换算' : plan.source === 'user_studio' ? '人工标注 + 程序化几何换算' : '来源未记录，需核对',
     designer: '程序化二维与同源 3D；效果图调用图像模型',
     quote: '参考价格与工程量规则计算，非独立模型推理',
     qa: '程序化规则质检，非现场施工验收',

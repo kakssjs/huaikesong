@@ -456,7 +456,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const design = byKind('design') as { svg?: string; note?: string } | undefined;
   const quote = byKind('quote') as { items?: { item: string; qty: number; unit: string; price?: number; total: number; source?: string }[]; total?: number; note?: string; weeks?: number; schedule?: { phase: string; weeks: number }[] } | undefined;
   const match = byKind('match') as { contractors?: { id?: number | string; bidId?: number; name: string; rating?: number; score?: number; reason: string; districts?: string[]; types?: string[]; verified?: boolean; amount?: string | number; weeks?: string | number; membershipTier?: string; customerResourceLevel?: string; ruleScore?: number }[]; note?: string; source?: string; bidCount?: number;
-    matchedBy?: 'mimo' | 'rules'; summary?: string;
+    matchedBy?: 'llm' | 'mimo' | 'rules'; summary?: string;
     products?: { id: string; name: string; category: string; imageUrl: string; officialUrl: string; room: string; reason: string }[] } | undefined;
 
   const doneCount = delivery.completedStages;
@@ -1121,14 +1121,14 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           <div className="panel-title">
             <div className="accent-bar" />
             匹配的装修队
-            <small>{match!.matchedBy === 'mimo' ? '第二智能体「小桥」· MiMo 按真实投标匹配' : '匹配师「小桥」按规则评分匹配'} · 脱敏信息</small>
+            <small>{match!.matchedBy === 'llm' || match!.matchedBy === 'mimo' ? '第二智能体「小桥」· 大模型按真实投标匹配' : '匹配师「小桥」按规则评分匹配'} · 脱敏信息</small>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '12px 0 4px' }}>
             <div className="record-mark lg">桥</div>
             <div style={{ fontSize: 12.5, lineHeight: 1.6 }}>
-              <b>小桥 · 匹配智能体{match!.matchedBy === 'mimo' ? '（MiMo）' : ''}</b>
-              <span style={{ color: 'var(--text-dim)' }}>　{match!.matchedBy === 'mimo'
-                ? (match!.summary || 'MiMo 阅读你的需求、户型和报价，对已审核且会员有效的装修队真实投标逐一评估排序。')
+              <b>小桥 · 匹配智能体{match!.matchedBy === 'llm' || match!.matchedBy === 'mimo' ? '（大模型）' : ''}</b>
+              <span style={{ color: 'var(--text-dim)' }}>　{match!.matchedBy === 'llm' || match!.matchedBy === 'mimo'
+                ? (match!.summary || '大模型阅读你的需求、户型和报价，对已审核且会员有效的装修队真实投标逐一评估排序。')
                 : (match!.summary || '基于真实投标（报价 / 工期）与资质档案打分匹配。')}选定装修队由你决定。</span>
             </div>
           </div>

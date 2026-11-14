@@ -22,7 +22,7 @@
 
 项目页新增“本轮交付与人工复核”，检查最新任务、依赖更新、缺图、数字一致性及 QA。缺图可以保留部分成果展示，最终确认和新发布需成果齐备；补图或修改后可提交重新质检。确认绑定本轮 QA，旧确认不能自动沿用。业主与平台可通过 `/api/projects/:id/delivery?download=1` 下载交付 JSON。只读报告不会触发模型、自动确认或支付。
 
-真实 Web 主链执行器在 `apps/web/lib/runner.ts`；`apps/worker` 为另行保留的 BullMQ 扩展骨架，不能仅凭其构建通过宣称外部队列闭环已完成。户型图片识别和效果图调用模型；画板、二维/3D、报价与 QA 包含规则实现，详见岗位说明。当前本地没有配置模型密钥，真实模型预演与成本效果待验证。
+真实 Web 主链执行器在 `apps/web/lib/runner.ts`；`apps/worker` 为另行保留的 BullMQ 扩展骨架，不能仅凭其构建通过宣称外部队列闭环已完成。户型图片识别和效果图调用模型；画板、二维/3D、报价与 QA 包含规则实现，详见岗位说明。已用一张真实户型图跑过一次真实模型预演（DeepSeek 识别 + Agnes 效果图）：识别、设计、报价和 9 张效果图均成功，但质检因门窗识别随机波动出现布局告警，交付报告未达到“齐备”，详见 [开发进度](docs/开发进度.md) 的 2026-11-14 实测记录。效果图是风格参考，不是按户型图的施工效果图。成本效果仍待验证。
 
 合同履约 V2 已实现：公司先确认、业主议价与版本重确认、三方演示签署、私有公章、合同下载、阶段验收与整改、模拟入金/分期结算/退款、服务费及争议记录。新业务不再在签署时产生旧整单利润分成。操作和升级见 [V2使用与部署说明](docs/V2使用与部署说明.md)，接口见 [workflow API](docs/workflow-api.md)。签署与资金明确为演示，正式电子签和资金服务接入另列。
 完整方案见 [修改方案](docs/requirements-v2.md)，本轮追踪见 [赛题对齐与后续修改记录](docs/赛题对齐与后续修改记录.md)。
@@ -31,7 +31,7 @@
 
 ```
 apps/web        Next.js 15（业主端 / 装修队端 / 老板控制台 + REST/SSE API）
-apps/worker     Agent 运行时（BullMQ 消费者 + 调度器 + MiMo 客户端）
+apps/worker     Agent 运行时（BullMQ 消费者 + 调度器 + 大模型客户端）
 packages/shared 共享类型：交接协议、异常规则、Agent 图、红线动作
 ```
 
@@ -57,7 +57,7 @@ npm run build
 NODE_ENV=production npm run start -w apps/web -- -H 127.0.0.1 -p 3200
 ```
 
-线上由 systemd 管理，前端需要 HTTPS 才能使用安全登录 Cookie。`IRENO_PGLITE_DIR` 和 `IRENO_UPLOAD_DIR` 应指向绝对路径并备份；不要在多个服务进程中打开同一个 PGlite 目录。MiMo 负责识别，Agnes 负责图像，支付凭证只给服务端读取。邮箱未启用时手机号密码登录仍可使用。
+线上由 systemd 管理，前端需要 HTTPS 才能使用安全登录 Cookie。`IRENO_PGLITE_DIR` 和 `IRENO_UPLOAD_DIR` 应指向绝对路径并备份；不要在多个服务进程中打开同一个 PGlite 目录。大模型（默认 DeepSeek，由 `LLM_API_KEY` 等环境变量配置）负责识别，Agnes 负责图像，支付凭证只给服务端读取。邮箱未启用时手机号密码登录仍可使用。
 
 `npm test` 使用临时数据库并在结束后清理。`scripts/acceptance.mjs`、`scripts/media-acceptance.mjs` 和 `scripts/browser-acceptance.cjs` 是本次隔离验收工具，不能直接对生产数据运行。正向企业会员测试的模拟权益仅由验收服务预加载 `scripts/test-payments.cjs`；生产服务禁止加载它。
 
@@ -66,10 +66,10 @@ NODE_ENV=production npm run start -w apps/web -- -H 127.0.0.1 -p 3200
 - [x] Monorepo（npm workspaces + TypeScript）
 - [x] shared：TaskRecord 交接协议、异常规则表、HANDOFF_GRAPH、Agent 红线动作
 - [x] shared：**2D→3D 重建管线**（`plan.ts`）——plan JSON（墙/门/窗/房间）为唯一事实源，`generatePlanGeometry` 按面积自动布局、`planFromRects` 按用户手绘/识别矩形建模，`planToSvg` 输出二维施工图，Scene3D 同源拉伸 3D
-- [x] worker：MiMo 客户端骨架、8 个 Agent 的 prompt/工具白名单、BullMQ 消费者（重试/降级/升级骨架）
+- [x] worker：大模型客户端骨架、8 个 Agent 的 prompt/工具白名单、BullMQ 消费者（重试/降级/升级骨架）
 - [x] web：Next.js 15 首页 + /api/health + PGlite/Drizzle 数据层
 - [x] 业主端设计包：户型识别 → 二维装修图（墙/门/窗/尺寸）→ 3D 交互模型（拖拽环绕/俯视）→ 材料清单+报价+工期 + Agnes 效果图（可对话修改）
-- [x] **户型图输入（用户给图）**：上传户型图 / 画板手绘（框房间+自由画笔）→ Agnes 图生图生成标准平面图（i2i 队列）→ MiMo 视觉识别房间矩形 → 按二维图生成 3D；结果持久化（kind=floorplan，覆盖式 upsert）
+- [x] **户型图输入（用户给图）**：上传户型图 / 画板手绘（框房间+自由画笔）→ Agnes 图生图生成标准平面图（i2i 队列）→ 大模型视觉识别房间矩形 → 按二维图生成 3D；结果持久化（kind=floorplan，覆盖式 upsert）
 - [x] **各房间渲染图（有几个生成几个）**：以识别/手绘房间为准（kind=floorplan rects 优先，Agent 房间兜底），全量生成不设上限，3 张并发 + 实时进度；对话改图即改即存（upsert）
 - [x] 老板控制台（/boss，实时数据）：审批队列（★红线人工确认）、任务记录（Task Record）、成本看板（Token/图像按 Agent 汇总）、订单（第一单闭环）
 - [x] 装修队端（/contractor）：注册、资质提交、应标；老板人工资质审核（★ Agent 不代为认证）
@@ -83,7 +83,7 @@ NODE_ENV=production npm run start -w apps/web -- -H 127.0.0.1 -p 3200
 ## 待实现（对照方案 §8）
 
 - [ ] 生产切换阿里云 RDS（现为 PGlite，切换只改 `db.ts` 一行）
-- [ ] OSS 上传（MiMo 视觉识别已接入户型识别链路，QA 质检已实现）
+- [ ] OSS 上传（大模型视觉识别已接入户型识别链路，QA 质检已实现）
 - [x] 装修队入驻费、规模分级、会员套餐和客户资源匹配（详见 `MEMBERSHIP.md`）
 - [x] 家具与智能家居商城：小米官方产品目录、分类搜索、选购清单与官方购买入口（详见 `MARKETPLACE.md`）
 - [x] 3D 模型模块：户型同源重建、自动家具摆放、门窗/玻璃、材质库、自动漫游、GLB/Blender Cycles/Pascal Editor 导出（详见 `3D-MODULE.md`）

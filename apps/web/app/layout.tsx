@@ -1,0 +1,36 @@
+import './globals.css';
+import Link from 'next/link';
+import AuthNav from './components/AuthNav';
+import LanguageProvider, { LangToggle } from './components/LanguageProvider';
+
+export const metadata = {
+  title: '予舍 · AI 装修智能体平台',
+  description: '予舍 AI 装修智能体团队：调度、户型识别、设计与3D、报价工期、交付质检、施工方匹配，协作推进方案交付并接续签约履约。',
+  icons: { icon: '/brand/icon.png' },
+};
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="zh-CN">
+      <body>
+        <LanguageProvider>
+        <header className="topbar">
+          <Link href="/" className="topbar-brand">
+            <div className="brand-icon"><img src="/brand/icon.png" alt="" /></div>
+            <span>予舍</span>
+            <span className="tag tag-brand">OPC</span>
+          </Link>
+          <nav style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+            <Link href="/furniture" className="btn btn-ghost" style={{ fontSize: 12, padding: '6px 14px' }}>
+              家具商城
+            </Link>
+            <AuthNav />
+            <LangToggle />
+          </nav>
+        </header>
+        {children}
+        </LanguageProvider>
+      </body>
+    </html>
+  );
+}

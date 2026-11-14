@@ -1,0 +1,1355 @@
+'use client';
+import { useEffect, useState, use, Suspense, lazy, useCallback, Fragment } from 'react';
+import { useRouter } from 'next/navigation';
+import { analyzeRoomLayout, type ExpectedWalls, type PlanGeometry, type PlanRoom } from '@i-renovation/shared/plan';
+import { buildSceneModel, type SceneModel } from '@i-renovation/shared/scene3d';
+import { describeMaterialPreset, type MaterialPresetId } from '@i-renovation/shared/materials';
+import { getMembershipTier } from '@i-renovation/shared/membership';
+import FloorPlanStudio, { geometryFromStudioRects, type StudioData, type StudioRect } from '../../components/FloorPlanStudio';
+// 数字员工形象统一为衬线字符徽记（.record-mark），不再使用卡通头像
+import PascalBridge from '../../components/PascalBridge';
+import { INTERIOR_IMAGES } from '@/lib/visuals';
+import { agentOf } from '@/lib/agents';
+import ProjectLocation, { type ProjectPlace } from '../../components/ProjectLocation';
+import ContractWorkbench from '../../components/ContractWorkbench';
+
+const Scene3D = lazy(() => import('../../components/Scene3D'));
+
+const STAGES: { key: string; label: string }[] = [
+  { key: 'floor_plan', label: '空间规划' },
+  { key: 'designer', label: '方案设计' },
+  { key: 'quote', label: '预算工期' },
+  { key: 'qa', label: '交付审核' },
+];
+
+interface ProjectData {
+  project: { id: number; name: string; style: string; area?: string; budget: string; stage: number; needs?: string } & ProjectPlace;
+  results: { kind: string; content: Record<string, unknown> }[];
+  tasks: {
+    id: number; toAgent: string; fromAgent: string; status: string; createdAt: string;
+    output?: { exception?: { rule?: string; ruleName?: string; action?: string; detail?: string }; ask?: string; degraded?: boolean } | null;
+  }[];
+}
+
+interface DecorationImage {
+  room: string;
+  prompt: string;
+  url?: string;
+  b64?: string;
+  /** 该房间的版面描述（门窗位置，来自户型几何），重新生成和对话修改时都带上，保持和图纸一致 */
+  layout?: string;
+  /** 户型图里这个房间三面墙上应有的窗和门的数量，用来核对生成的图 */
+  expected?: ExpectedWalls;
+  /** 生成后的核对结果：没有这个字段表示没核对过 */
+  check?: RenderCheck;
+  /** 没有真实户型图作依据（房间和门窗是系统按面积估的）：这张图只是示意 */
+  estimated?: boolean;
+  /** 这个房间之前生成过的版本（不含当前图），旧的在前 */
+  history?: DecorationVersion[];
+}
+
+interface RenderCheck { ok: boolean; tries: number; issues: string[] }
+
+interface DecorationVersion {
+  prompt: string;
+  url?: string;
+  b64?: string;
+  layout?: string;
+  expected?: ExpectedWalls;
+  check?: RenderCheck;
+  estimated?: boolean;
+}
+
+/** 当前户型下一个房间的信息。fromPlan=false 表示没有业主的户型图，房间和门窗是系统估的，不能当真。 */
+interface PlanRoomInfo { name: string; area: number; layout: string; expected?: ExpectedWalls; fromPlan: boolean }
+
+/** 一张图现在该显示什么状态：对不对、有没有核对、是不是已经过期。 */
+function renderStatus(img: DecorationImage, current?: PlanRoomInfo): { tone: 'ok' | 'warn' | 'info'; text: string } {
+  if (img.layout && current?.layout && img.layout !== current.layout) {
+    return { tone: 'warn', text: '户型已修改，这张图可能和现在的户型不一致，建议重新生成' };
+  }
+  if (img.check?.ok) {
+    return { tone: 'ok', text: `✓ 已核对：三面墙上的窗和门数量与户型图一致${img.check.tries > 1 ? `（重新生成到第 ${img.check.tries} 次才通过）` : ''}` };
+  }
+  if (img.check) {
+    return { tone: 'warn', text: `⚠ 没能通过核对：${img.check.issues.join('、') || '门窗数量不符'}（已生成 ${img.check.tries} 次，留的是最接近的一张）。可以重新生成，或在对话里让 AI 改` };
+  }
+  if (img.layout) return { tone: 'info', text: '按户型图的门窗描述生成，但没有核对' };
+  return { tone: 'info', text: '示意图：不是按户型图生成的（还没有户型图，或生成时没有）。在上方工作台识别户型图后重新生成，才会按图并核对' };
+}
+
+const MAX_HISTORY = 20;
+
+/** 新图成为当前图时，把原来的当前图放进历史（只保留最近 MAX_HISTORY 个）。 */
+function withHistory(next: DecorationImage, prev?: DecorationImage): DecorationImage {
+  const history = [...(prev?.history ?? [])];
+  if (prev && (prev.url || prev.b64)) {
+    history.push({ prompt: prev.prompt, url: prev.url, b64: prev.b64, layout: prev.layout, expected: prev.expected, check: prev.check, estimated: prev.estimated });
+  }
+  return { ...next, history: history.slice(-MAX_HISTORY) };
+}
+
+/** 历史缩略图下的文字：首次生成的英文提示词显示为「初始生成」，其余显示用户的修改意见。 */
+function versionLabel(prompt: string): string {
+  return prompt.startsWith('Interior decoration design photo') ? '初始生成' : prompt;
+}
+
+interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  imageUrl?: string;
+}
+
+interface OrderData {
+  id: number;
+  projectId: number;
+  homeownerId: number;
+  companyId: number | null;
+  status: string;
+  bidAmount: string | null;
+  bidWeeks: string | null;
+  bidNote: string | null;
+  matchScore: string | null;
+  homeownerConfirmedAt: string | null;
+  companyConfirmedAt: string | null;
+  confirmedAt: string | null;
+  contractedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface BidData {
+  id: number;
+  orderId: number;
+  companyId: number;
+  companyName: string;
+  amount: string;
+  weeks: string;
+  note: string | null;
+  status: string;
+  createdAt: string;
+}
+
+function readUser(): { id: number; name: string } {
+  try {
+    const saved = localStorage.getItem('user');
+    if (saved) {
+      const u = JSON.parse(saved) as { id?: unknown; name?: unknown };
+      return {
+        id: typeof u.id === 'number' && Number.isFinite(u.id) ? u.id : 1,
+        name: typeof u.name === 'string' && u.name ? u.name : '业主',
+      };
+    }
+  } catch {
+    /* ignore */
+  }
+  return { id: 1, name: '业主' };
+}
+
+export default function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const router = useRouter();
+  const [data, setData] = useState<ProjectData | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [order, setOrder] = useState<OrderData | null>(null);
+  const [bids, setBids] = useState<BidData[]>([]);
+  const [bidBusy, setBidBusy] = useState(false);
+  const [showRecommend, setShowRecommend] = useState(false);
+  const [userName, setUserName] = useState('业主');
+  // 装饰图对话
+  const [decorations, setDecorations] = useState<DecorationImage[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatBusy, setChatBusy] = useState(false);
+  const [selectedIdx, setSelectedIdx] = useState<number>(-1);
+  // 户型图输入（上传 / 画板手绘）
+  const [fpData, setFpData] = useState<StudioData | null>(null);
+  const [customGeom, setCustomGeom] = useState<PlanGeometry | null>(null);
+  const [fpSource, setFpSource] = useState<'user' | 'agent'>('user');
+  // 工作台数据 → 下游（空间设计图 / 房间渲染图）
+  const [studioRects, setStudioRects] = useState<StudioRect[]>([]);
+  const [stdUrl, setStdUrl] = useState<string | null>(null);
+  const [genRoomsBusy, setGenRoomsBusy] = useState(false);
+  const [genRoomsProgress, setGenRoomsProgress] = useState('');
+  // 报价调整 + 最终确认（业主人工动作）
+  const [adjustPct, setAdjustPct] = useState(0);
+  const [decision, setDecision] = useState<{ finalTotal: number; adjustPct: number; confirmedAt: string } | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
+  // 删除项目（两级确认，防误触）
+  const [delConfirm, setDelConfirm] = useState(false);
+  const [delBusy, setDelBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setData(null); setLoadError(''); setDecorations([]); setFpData(null); setCustomGeom(null); setOrder(null); setDecision(null);
+    const load = async () => {
+      try {
+        const response = await fetch('/api/projects/' + id);
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || `读取项目失败（${response.status}）`);
+        if (!cancelled) { setData(body); setLoadError(''); }
+      } catch (error) {
+        if (!cancelled) setLoadError(error instanceof Error ? error.message : '读取项目失败');
+      }
+    };
+    void load();
+    const t = setInterval(() => { if (document.visibilityState === 'visible') void load(); }, 2000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [id]);
+
+  useEffect(() => {
+    setUserName(readUser().name);
+  }, []);
+
+  // Load decoration images from results
+  useEffect(() => {
+    if (!data) return;
+    const dec = results.find(r => r.kind === 'decorations')?.content as { images?: DecorationImage[] } | undefined;
+    if (dec?.images) {
+      setDecorations(dec.images);
+      if (dec.images.length > 0 && selectedIdx < 0) setSelectedIdx(0);
+    }
+  }, [data, selectedIdx]);
+
+  // 恢复已保存的户型输入与业主决策（仅一次）
+  useEffect(() => {
+    if (!data) return;
+    if (!fpData) {
+      const fp = results.find(r => r.kind === 'floorplan')?.content as StudioData | undefined;
+      if (fp && (fp.stdImage || fp.image || fp.rects?.length)) setFpData(fp);
+    }
+    if (!decision) {
+      const dc = results.find(r => r.kind === 'decision')?.content as { finalTotal?: number; adjustPct?: number; confirmedAt?: string } | undefined;
+      if (dc?.confirmedAt) {
+        setDecision({ finalTotal: dc.finalTotal ?? 0, adjustPct: dc.adjustPct ?? 0, confirmedAt: dc.confirmedAt });
+        if (typeof dc.adjustPct === 'number') setAdjustPct(dc.adjustPct);
+      }
+    }
+  }, [data, fpData, decision]);
+
+  // 工作台数据回调（保持引用稳定，避免反复触发）
+  const handleRooms = useCallback((r: StudioRect[]) => setStudioRects(r), []);
+  const handleStd = useCallback((u: string | null) => setStdUrl(u), []);
+
+  // 根据房型图生成各房间渲染图（Agnes）：识别/手绘的房间有几个生成几个
+  /**
+   * 当前户型下的房间。只有业主上传、识别或手绘的户型图（studioRects）才有真实的房间和门窗，
+   * 才给出版面描述和核对用的数量；Agent 在没有户型图时按面积估出来的布局是编的，只给名字和面积，图标「示意」。
+   */
+  function planRooms(): PlanRoomInfo[] {
+    if (studioRects.length > 0) {
+      try {
+        const geom = geometryFromStudioRects(studioRects, Number(data!.project.area) || undefined);
+        return geom.rooms.map((r, i) => {
+          const a = analyzeRoomLayout(geom, i);
+          return { name: r.name, area: r.area, layout: a?.text ?? '', expected: a?.expected, fromPlan: true };
+        });
+      } catch { /* 几何建不出来：退回只有名字和面积 */ }
+    }
+    const rooms = studioRects.length > 0 ? studioRects.map(r => ({ name: r.name, area: 0 })) : (plan?.rooms ?? []);
+    return rooms.map(r => ({ name: r.name, area: r.area, layout: '', fromPlan: false }));
+  }
+
+  async function generateRoomRenderings() {
+    if (genRoomsBusy) return;
+    setGenRoomsBusy(true);
+    try {
+      // 房间源：用户识别/手绘的房间优先（尺寸和门窗取自与 3D 建模同一份几何），没有才用 Agent 估的（只当示意）
+      const rooms = planRooms();
+      // 有几个房间生成几张，不设上限
+      const target = rooms.filter(r => r.name && r.area > 0);
+      if (target.length === 0) return;
+      const imgs: DecorationImage[] = new Array(target.length);
+      let doneCount = 0;
+      setGenRoomsProgress(`0/${target.length}`);
+      // 3 张并发，兼顾限流与速度
+      let next = 0;
+      const workers = Array.from({ length: Math.min(3, target.length) }, async () => {
+        while (next < target.length) {
+          const i = next++;
+          const room = target[i];
+          const prompt = `Interior decoration design photo of a ${room.name}, ${room.area} square meters, ${data!.project.style} style, fully furnished and decorated, warm lighting, realistic, high quality, architectural visualization${room.layout ? '. ' + room.layout : ''}${materialPrompt ? '. ' + materialPrompt : ''}`;
+          // 同一房间重新生成时，旧图进入历史；生成失败则保留旧图
+          const prev = decorations[i]?.room === room.name ? decorations[i] : undefined;
+          try {
+            const res = await fetch('/api/agnes/generate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              // expected：让服务端生成后数一数三面墙上的窗和门，对不上就带纠正重新生成（见 lib/render-check.ts）
+              body: JSON.stringify({ prompt, size: '1K', ratio: '16:9', expected: room.expected }),
+            });
+            const j = await res.json() as { url?: string; b64_json?: string; check?: RenderCheck };
+            const fresh: DecorationImage = { room: room.name, prompt, layout: room.layout, expected: room.expected, check: j.check, estimated: !room.fromPlan, url: j.url, b64: j.b64_json };
+            imgs[i] = fresh.url || fresh.b64 ? withHistory(fresh, prev) : (prev ?? fresh);
+          } catch {
+            imgs[i] = prev ?? { room: room.name, prompt, layout: room.layout, expected: room.expected, estimated: !room.fromPlan };
+          }
+          doneCount += 1;
+          setGenRoomsProgress(`${doneCount}/${target.length}`);
+        }
+      });
+      await Promise.all(workers);
+      setDecorations(imgs);
+      if (imgs.length > 0) setSelectedIdx(0);
+      await persistDecorations(imgs);
+    } catch (error) { window.alert(error instanceof Error ? error.message : '效果图保存失败'); } finally {
+      setGenRoomsBusy(false);
+      setGenRoomsProgress('');
+    }
+  }
+
+  // 最终确认（业主人工动作）→ 自动发布到接单市场
+  async function finalConfirm() {
+    if (confirmBusy) return;
+    setConfirmBusy(true);
+    try {
+      const base = quote?.total ?? 0;
+      const finalTotal = Math.round(base * (1 + adjustPct / 100));
+      const confirmedAt = new Date().toISOString();
+      const saved = await fetch(`/api/projects/${id}/results`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'decision',
+          content: { finalTotal, adjustPct, confirmedAt, note: '业主最终确认（人工动作）· 确认后自动发布' },
+        }),
+      });
+      if (!saved.ok) throw new Error('确认结果保存失败，请重试');
+      if (!order) {
+        const res = await fetch('/api/orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projectId: Number(id), homeownerId: readUser().id }),
+        });
+        if (!res.ok) throw new Error((await res.json()).error || '发布失败');
+        setOrder((await res.json()) as OrderData);
+      }
+      setDecision({ finalTotal, adjustPct, confirmedAt });
+    } catch (error) { window.alert(error instanceof Error ? error.message : '保存或发布失败'); } finally {
+      setConfirmBusy(false);
+    }
+  }
+
+  // 保存各房间装饰图（含历史版本），覆盖式，刷新后不丢
+  async function persistDecorations(imgs: DecorationImage[]) {
+    const saved = await fetch(`/api/projects/${id}/results`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'decorations',
+        upsert: true,
+        content: { images: imgs, style: data?.project.style, note: `根据房型图生成的空间效果图（${imgs.length} 间）` },
+      }),
+    });
+    if (!saved.ok) throw new Error('效果图保存失败，请重试');
+  }
+
+  // Chat: modify decoration image
+  async function sendChat() {
+    if (!chatInput.trim() || chatBusy || selectedIdx < 0) return;
+    const msg = chatInput.trim();
+    setChatInput('');
+    setChatMessages(prev => [...prev, { role: 'user', content: msg }]);
+    setChatBusy(true);
+    try {
+      const currentImg = decorations[selectedIdx];
+      const roomName = currentImg?.room ?? '';
+      const res = await fetch('/api/agnes/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: msg,
+          imageUrl: currentImg?.url || currentImg?.b64 ? (currentImg.url ?? `data:image/png;base64,${currentImg.b64}`) : undefined,
+          style: data?.project.style,
+          room: roomName,
+          layout: currentImg?.layout,
+          expected: currentImg?.expected,
+          materialPrompt,
+        }),
+      });
+      const json = await res.json();
+      if (json.url || json.b64_json) {
+        const newImg = withHistory({ room: roomName, prompt: msg, layout: currentImg?.layout, expected: currentImg?.expected, estimated: currentImg?.estimated, check: json.check, url: json.url, b64: json.b64_json }, currentImg);
+        const nextImgs = decorations.map((d, i) => i === selectedIdx ? newImg : d);
+        await persistDecorations(nextImgs);
+        setDecorations(nextImgs);
+        setChatMessages(prev => [...prev, { role: 'assistant', content: `已根据"${msg}"重新生成 ${roomName} 装饰图${json.check && !json.check.ok ? `（但门窗没通过核对：${(json.check.issues as string[]).join('、')}）` : ''}`, imageUrl: json.url || `data:image/png;base64,${json.b64_json}` }]);
+        // 持久化替换结果（覆盖式，刷新后不丢）
+      } else {
+        setChatMessages(prev => [...prev, { role: 'assistant', content: '生成失败：' + (json.error ?? '未知错误') }]);
+      }
+    } catch {
+      setChatMessages(prev => [...prev, { role: 'assistant', content: '网络错误，请重试' }]);
+    }
+    setChatBusy(false);
+  }
+
+  // 恢复某个历史版本：它成为当前图，原来的当前图进入历史（版本一个都不丢）
+  async function restoreVersion(k: number) {
+    const cur = decorations[selectedIdx];
+    const chosen = cur?.history?.[k];
+    if (!cur || !chosen || chatBusy) return;
+    const restored = withHistory(
+      { room: cur.room, prompt: chosen.prompt, layout: chosen.layout, expected: chosen.expected, check: chosen.check, estimated: chosen.estimated, url: chosen.url, b64: chosen.b64 },
+      { ...cur, history: (cur.history ?? []).filter((_, j) => j !== k) },
+    );
+    const nextImgs = decorations.map((d, i) => (i === selectedIdx ? restored : d));
+    setChatBusy(true);
+    try { await persistDecorations(nextImgs); setDecorations(nextImgs); }
+    catch { window.alert('历史版本恢复失败，请重试'); }
+    finally { setChatBusy(false); }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadOrderFlow = async () => {
+      try {
+        const homeownerId = readUser().id;
+        const ordersRes = await fetch('/api/orders?role=homeowner&id=' + homeownerId);
+        const ordersJson: unknown = await ordersRes.json();
+        if (cancelled) return;
+        const list = Array.isArray(ordersJson) ? (ordersJson as OrderData[]) : [];
+        const current = list.find(o => o.projectId === Number(id)) ?? null;
+        setOrder(current);
+        if (current) {
+          const bidsRes = await fetch('/api/bids?orderId=' + current.id);
+          const bidsJson: unknown = await bidsRes.json();
+          if (!cancelled && Array.isArray(bidsJson)) setBids(bidsJson as BidData[]);
+        } else if (!cancelled) {
+          setBids([]);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    loadOrderFlow();
+    const t = setInterval(loadOrderFlow, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [id]);
+
+  if (loadError && !data) return <main className="container"><p role="alert">{loadError}</p><a href="/">返回首页登录</a></main>;
+  if (!data) {
+    return (
+      <div className="container" style={{ padding: 80, textAlign: 'center', color: 'var(--text-dim)' }}>
+        <div style={{ fontSize: 32, marginBottom: 12, animation: 'ring-pulse 1.5s ease-in-out infinite' }}>⟳</div>
+        <div style={{ fontSize: 15, marginBottom: 8 }}>正在准备设计方案…</div>
+        <div style={{ fontSize: 11, color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>INITIALIZING AGENTS...</div>
+      </div>
+    );
+  }
+
+  const tasks = data.tasks ?? [];
+  const results = data.results ?? [];
+  const done = new Set(tasks.filter(t => t.status === 'done').map(t => t.toAgent));
+  const running = new Set(tasks.filter(t => t.status === 'running').map(t => t.toAgent));
+  const failed = new Set(tasks.filter(t => t.status === 'failed').map(t => t.toAgent));
+  const byKind = (k: string) => results.find(r => r.kind === k)?.content as Record<string, unknown> | undefined;
+
+  const plan = byKind('plan') as { rooms?: PlanRoom[]; geometry?: PlanGeometry; note?: string; warnings?: string[] } | undefined;
+  const savedSceneModel = byKind('scene_model') as SceneModel | undefined;
+  const design = byKind('design') as { svg?: string; note?: string } | undefined;
+  const quote = byKind('quote') as { items?: { item: string; qty: number; unit: string; price?: number; total: number; source?: string }[]; total?: number; note?: string; weeks?: number; schedule?: { phase: string; weeks: number }[] } | undefined;
+  const match = byKind('match') as { contractors?: { id?: number | string; bidId?: number; name: string; rating?: number; score?: number; reason: string; districts?: string[]; types?: string[]; verified?: boolean; amount?: string | number; weeks?: string | number; membershipTier?: string; customerResourceLevel?: string; ruleScore?: number }[]; note?: string; source?: string; bidCount?: number;
+    matchedBy?: 'mimo' | 'rules'; summary?: string;
+    products?: { id: string; name: string; category: string; imageUrl: string; officialUrl: string; room: string; reason: string }[] } | undefined;
+
+  const doneCount = STAGES.filter(s => done.has(s.key)).length;
+  const progress = Math.round((doneCount / STAGES.length) * 100);
+  const totalArea = plan?.rooms?.reduce((s, r) => s + r.area, 0) ?? 0;
+  const activeSceneModel: SceneModel | undefined = customGeom
+    ? buildSceneModel(customGeom, customGeom.rooms, data.project.style, { source: 'floor_plan' })
+    : savedSceneModel;
+  const materialPrompt = activeSceneModel ? describeMaterialPreset(activeSceneModel.materialPreset) : '';
+
+  const budgetText = (() => {
+    const b = (data.project.budget ?? '').trim();
+    if (!b) return '待确认';
+    const m = b.match(/^(\d+(?:\.\d+)?)\s*[-~—–]\s*(\d+(?:\.\d+)?)\s*(万|w|W)?$/);
+    return m ? `${m[1]}–${m[2]} 万元` : b;
+  })();
+
+  // 异常横幅（EXCEPTION_RULES）：等待用户补充 / 升级老板裁决 / 降级交付
+  const waitingTasks = tasks.filter(t => t.status === 'waiting_user');
+  const escalatedTasks = tasks.filter(t => t.status === 'escalated');
+
+  const recommended = match?.contractors?.[0];
+
+  // —— 发布/匹配阶段状态流：业主确认 → 发布 → 等待装修公司投标 → 匹配智能体匹配 ——
+  const matcherTask = [...tasks].filter(t => t.toAgent === 'matcher').sort((a, b) => b.id - a.id)[0];
+  const matcherBusy = !!matcherTask && (matcherTask.status === 'pending' || matcherTask.status === 'running');
+  const matchCount = match?.contractors?.length ?? 0;
+
+  const orderStatusTag = (status: string) => {
+    const map: Record<string, { text: string; cls: string }> = {
+      open: { text: '开放竞标中', cls: 'tag tag-cyan' },
+      bidding: { text: '竞标进行中', cls: 'tag tag-cyan' },
+      matched: { text: '已选定公司', cls: 'tag tag-purple' },
+      homeowner_confirmed: { text: '业主已确认', cls: 'tag tag-orange' },
+      company_confirmed: { text: '公司已确认', cls: 'tag tag-orange' },
+      confirmed: { text: '双方已确认', cls: 'tag tag-green' },
+      contracted: { text: '已签约', cls: 'tag tag-green' },
+    };
+    const m = map[status];
+    return <span className={m ? m.cls : 'tag tag-cyan'}>{m ? m.text : status}</span>;
+  };
+
+  const publishProject = async () => {
+    try {
+      const res = await fetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: Number(id), homeownerId: readUser().id }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || '操作失败');
+      setOrder((await res.json()) as OrderData);
+    } catch (error) { window.alert(error instanceof Error ? error.message : '操作失败，请重试'); }
+  };
+
+  const chooseBid = async (bid: BidData) => {
+    if (!order || bidBusy) return;
+    setBidBusy(true);
+    try {
+      const res = await fetch('/api/orders/' + order.id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyId: bid.companyId,
+          status: 'matched',
+          bidAmount: bid.amount,
+          bidWeeks: bid.weeks,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || '操作失败');
+      setOrder((await res.json()) as OrderData);
+    } catch (error) { window.alert(error instanceof Error ? error.message : '操作失败，请重试'); } finally { setBidBusy(false); }
+  };
+
+  // 用户补充/确认后恢复等待中的任务（reask_user → 续跑流水线）
+  const handleResume = async () => {
+    try {
+      await fetch(`/api/projects/${id}/resume`, { method: 'POST' });
+      const res = await fetch('/api/projects/' + id);
+      if (res.ok) setData(await res.json());
+    } catch { /* ignore */ }
+  };
+
+  // 删除项目（业主动作，两级确认后执行）：级联清理任务/结果/订单/投标/合同，返回工作台
+  const deleteProject = async () => {
+    if (delBusy) return;
+    setDelBusy(true);
+    try {
+      const res = await fetch('/api/projects/' + id, { method: 'DELETE' });
+      if (res.ok) {
+        router.push('/dashboard');
+        return;
+      }
+    } catch (error) { window.alert(error instanceof Error ? error.message : '操作失败，请重试'); }
+    setDelBusy(false);
+  };
+
+  return (
+    <main className="container" style={{ paddingTop: 32 }}>
+      {/* 项目视觉头部 */}
+      <section
+        className="project-masthead"
+        style={{ backgroundImage: `url("${INTERIOR_IMAGES.living}")` }}
+      >
+        <div className="project-masthead-content">
+          <div>
+            <span className="role-kicker"><i /> RESIDENCE PROJECT · {data.project.style}</span>
+            <h1>{data.project.name}</h1>
+            <div className="project-masthead-meta">
+              <span>{data.project.area ? `${data.project.area}㎡` : '面积待量房'}</span>
+              <span>{data.project.budget ? `预算 ${data.project.budget}` : '预算待确认'}</span>
+              <span>{data.project.stage >= 3 ? '施工匹配中' : '方案设计中'}</span>
+            </div>
+          </div>
+          <div className="project-masthead-actions">
+            {delConfirm ? (
+              <>
+                <button
+                  className="btn"
+                  disabled={delBusy}
+                  onClick={() => void deleteProject()}
+                  style={{ fontSize: 11, padding: '7px 12px', background: 'var(--bad-bg)', border: '1px solid #f1c4bf', color: 'var(--accent-danger)' }}
+                >
+                  {delBusy ? '删除中…' : '确认删除？'}
+                </button>
+                <button className="btn btn-ghost role-ghost-light" onClick={() => setDelConfirm(false)} style={{ fontSize: 11, padding: '7px 12px' }}>
+                  取消
+                </button>
+              </>
+            ) : (
+              <button
+                className="btn btn-ghost role-ghost-light"
+                onClick={() => setDelConfirm(true)}
+                style={{ fontSize: 11, padding: '7px 12px' }}
+              >
+                删除项目
+              </button>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* 异常处理横幅（EXCEPTION_RULES）：反问用户 / 升级老板裁决 */}
+      {waitingTasks.map(t => (
+        <div key={`wait_${t.id}`} style={{
+          marginTop: 16, padding: '14px 18px', borderRadius: 10,
+          background: 'var(--warn-bg)', border: '1px solid #f0d9a4',
+          display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
+        }}>
+          <div className={`exception-mark ${t.status === 'waiting_user' ? 'warn' : 'danger'}`}>{agentOf(t.toAgent).name.slice(-1)}</div>
+          <div style={{ flex: 1, minWidth: 260 }}>
+            <b style={{ color: 'var(--accent-warn)', fontSize: 13 }}>⏳ 需要您补充信息 · {agentOf(t.toAgent).name}</b>
+            <div style={{ fontSize: 12, color: 'var(--text)', marginTop: 4, lineHeight: 1.7 }}>
+              {String(t.output?.exception?.detail ?? '')} —— {String(t.output?.ask ?? '请补充后继续')}
+            </div>
+          </div>
+          <button className="btn btn-primary" onClick={handleResume} style={{ whiteSpace: 'nowrap' }}>
+            我已补充，继续 →
+          </button>
+        </div>
+      ))}
+      {escalatedTasks.map(t => (
+        <div key={`esc_${t.id}`} style={{
+          marginTop: waitingTasks.length ? 10 : 16, padding: '14px 18px', borderRadius: 10,
+          background: 'var(--bad-bg)', border: '1px solid #f1c4bf',
+          display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
+        }}>
+          <div className={`exception-mark ${t.status === 'waiting_user' ? 'warn' : 'danger'}`}>{agentOf(t.toAgent).name.slice(-1)}</div>
+          <div style={{ flex: 1, minWidth: 260 }}>
+            <b style={{ color: 'var(--accent-danger)', fontSize: 13 }}>🔔 已升级老板裁决 · {String(t.output?.exception?.ruleName ?? '异常升级')}</b>
+            <div style={{ fontSize: 12, color: 'var(--text)', marginTop: 4, lineHeight: 1.7 }}>
+              {agentOf(t.toAgent).name}（{t.toAgent}）：{String(t.output?.exception?.detail ?? '')} —— 按红线规则 Agent 不得自行改动，已提交老板人工裁决（重跑 / 降级交付 / 通知业主）
+            </div>
+          </div>
+          <a className="btn" href="/boss" style={{ whiteSpace: 'nowrap', textDecoration: 'none' }}>去控制台查看 →</a>
+        </div>
+      ))}
+
+      {/* 阶段进度轨：克制的建筑感时间轴，替代卡通数字员工流水线 */}
+      <div className="stage-rail" style={{ marginTop: 24 }}>
+        {STAGES.map((s, i) => {
+          const status = done.has(s.key) ? 'done' : running.has(s.key) ? 'running' : failed.has(s.key) ? 'failed' : 'pending';
+          return (
+            <div key={s.key} className={`stage-step ${status}`}>
+              <div className="stage-marker">{status === 'done' ? '✓' : i + 1}</div>
+              <span className="stage-name">{s.label}</span>
+              <span className="stage-note">
+                {status === 'done' ? '已完成' : status === 'running' ? '进行中' : status === 'failed' ? '需处理' : '待开始'}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 项目概要：单块面板 + 细分隔线元数据，替代四张大圆角统计卡 */}
+      <section className="project-brief">
+        <div className="brief-top">
+          <div>
+            <div className="brief-eyebrow">PROJECT BRIEF · 项目概要</div>
+            <h2 className="brief-heading">
+              {data.project.area ? `${data.project.area}㎡` : ''}{data.project.style}住宅
+              <em>，{progress >= 100 ? '设计流程已全部完成' : `设计流程进行至 ${progress}%`}</em>
+            </h2>
+          </div>
+          <div className="brief-progress">
+            <div className="brief-progress-label">
+              <span>DESIGN FLOW · 设计流程</span>
+              <b>{doneCount} / {STAGES.length}</b>
+            </div>
+            <div className="brief-bar"><i style={{ width: `${progress}%` }} /></div>
+          </div>
+        </div>
+        <div className="brief-meta">
+          <div className="brief-item"><span>建筑面积</span><strong>{data.project.area ? `${data.project.area} ㎡` : '待量房'}</strong></div>
+          <div className="brief-item"><span>预算区间</span><strong>{budgetText}</strong></div>
+          <div className="brief-item"><span>设计风格</span><strong>{data.project.style}</strong></div>
+          <div className="brief-item"><span>当前阶段</span><strong>{data.project.stage >= 3 ? '施工匹配' : '方案设计'}</strong></div>
+          <div className="brief-item"><span>空间规划</span><strong>{studioRects.length > 0 ? `${studioRects.length} 个空间` : plan?.rooms?.length ? `${plan.rooms.length} 个空间` : '待规划'}</strong></div>
+        </div>
+      </section>
+
+      {/* 设计意向：真实空间影像 + 材质色卡，让页面有呼吸也有分量 */}
+      <section className="moodband">
+        <div className="moodband-head">
+          <div>
+            <div className="brief-eyebrow">DESIGN DIRECTION · 设计意向</div>
+            <h3>轻奢不是堆料，是光、比例与材质的分寸感</h3>
+          </div>
+          <p>以雾蓝灰与暖木色为基调，岩板、胡桃木与黄铜收口；效果图与三维模型都按这套材质语言执行。</p>
+        </div>
+        <div className="mood-grid">
+          {[
+            { img: INTERIOR_IMAGES.livingWarm, t: '自然光与安静秩序', s: 'LIVING / 01' },
+            { img: INTERIOR_IMAGES.detail, t: '材质的温度', s: 'DETAIL / 02' },
+            { img: INTERIOR_IMAGES.texture, t: '触感与层次', s: 'TEXTURE / 03' },
+          ].map(x => (
+            <div key={x.s} className="mood-shot" style={{ backgroundImage: `url("${x.img}")` }}>
+              <div className="mood-caption">
+                <b>{x.t}</b>
+                <span>{x.s}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="swatch-row">
+          <span>材质意向</span>
+          <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#d9d4cc,#b9b2a8)' }} /><b>微水泥</b></div>
+          <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#7a5a41,#a67c52)' }} /><b>胡桃木</b></div>
+          <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#c9a227,#e8d9a0)' }} /><b>黄铜</b></div>
+          <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#e8e4dd,#cfc7bb)' }} /><b>岩板</b></div>
+          <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#cfc6bb,#a99c8f)' }} /><b>羊绒</b></div>
+        </div>
+      </section>
+
+      <section style={{ marginTop: 18 }}>
+        <ProjectLocation place={data.project} />
+      </section>
+
+      {/* 户型与空间规划：用户上传 / 画板手绘工作台 */}
+      <section className="panel" style={{ marginTop: 18 }}>
+        <div className="panel-title">
+          <div className="accent-bar" />
+          户型与空间规划
+          <small>上传原始户型图或手动框选 → 标准平面图 → 三维模型</small>
+        </div>
+        <FloorPlanStudio
+          projectId={Number(id)}
+          totalArea={Number(data.project.area) || undefined}
+          initial={fpData}
+          onApply={async (g) => {
+            if (!g) return;
+            const localScene = buildSceneModel(g, g.rooms, data.project.style, { source: 'floor_plan' });
+            const response = await fetch(`/api/projects/${id}/results`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ kind: 'scene_model', upsert: true, content: localScene }),
+            });
+            if (!response.ok) throw new Error('3D 保存失败');
+            setCustomGeom(g);
+            setFpSource('user');
+            const rerun = await fetch(`/api/projects/${id}/replan`, { method: 'POST' });
+            if (!rerun.ok) throw new Error('设计与报价任务提交失败，请重试');
+          }}
+          onRooms={handleRooms}
+          onStdImage={handleStd}
+        />
+      </section>
+
+      {/* 户型识别结果（用户房型图识别出的房间） */}
+      {(studioRects.length > 0 || plan?.rooms) && (
+        <section className="panel" style={{ marginTop: 18 }}>
+          <div className="panel-title">
+            <div className="accent-bar" />
+            户型识别结果
+            <small>{studioRects.length > 0 ? '来自你的房型图' : `PRJ_${id}`}</small>
+          </div>
+          <table className="data-table">
+            <thead>
+              <tr><th>房间</th><th>面积</th><th>占比</th></tr>
+            </thead>
+            <tbody>
+              {(studioRects.length > 0
+                ? studioRects.map(r => ({ name: r.name, area: Math.round(r.w * r.d * 0.0125 * 0.0125 * 10) / 10 }))
+                : (plan?.rooms ?? [])
+              ).map((r, i, arr) => {
+                const sum = arr.reduce((s, x) => s + x.area, 0) || 1;
+                return (
+                  <tr key={i}>
+                    <td>{r.name}</td>
+                    <td>{r.area}㎡</td>
+                    <td>
+                    <div className="ratio-cell">
+                      <span>{Math.round((r.area / sum) * 100)}%</span>
+                      <div className="ratio-bar"><i style={{ width: `${Math.round((r.area / sum) * 100)}%` }} /></div>
+                    </div>
+                  </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p style={{ color: 'var(--text-dim)', fontSize: 11, marginTop: 10 }}>
+            户型识别生成 · 尺寸以现场量房为准
+          </p>
+        </section>
+      )}
+
+      {/* 空间设计图：标准房型图 */}
+      <section className="panel" style={{ marginTop: 18 }}>
+        <div className="panel-title">
+          <div className="accent-bar" />
+          空间设计图
+          <small>标准房型图 · 与 3D 同源</small>
+        </div>
+        {(stdUrl || fpData?.stdImage || fpData?.image) ? (
+          <>
+            <img
+              src={(stdUrl ?? fpData?.stdImage ?? fpData?.image) as string}
+              alt="标准房型图"
+              style={{ width: '100%', maxWidth: 820, borderRadius: 12, border: '1px solid var(--border-strong)', display: 'block' }}
+            />
+            <p style={{ color: 'var(--text-dim)', fontSize: 11, marginTop: 10 }}>
+              {(stdUrl || fpData?.stdImage) ? '标准房型图 · 尺寸以现场量房为准' : '上传户型图 · 可在上方工作台一键标准化'}
+            </p>
+          </>
+        ) : design?.svg ? (
+          <>
+            <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(design.svg)}`} alt="二维设计图" style={{ width: '100%', border: '1px solid var(--border-strong)', borderRadius: 12 }} />
+            <p style={{ color: 'var(--text-dim)', fontSize: 11, marginTop: 10 }}>{design.note}</p>
+          </>
+        ) : (
+          <p style={{ color: 'var(--text-dim)', fontSize: 13 }}>
+            暂无房型图 — 在上方工作台上传图片或手绘框房间，点击「生成标准平面图」
+          </p>
+        )}
+      </section>
+
+      {/* 各房间渲染图（根据房型图生成）+ 对话修改 */}
+      <section className="panel" style={{ marginTop: 18 }}>
+        <div className="panel-title">
+          <div className="accent-bar" />
+          各房间渲染图（根据房型图生成）
+          <small>AGNES IMAGE ENGINE</small>
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', margin: '12px 0 4px' }}>
+          <button className="btn btn-primary" disabled={genRoomsBusy} onClick={() => void generateRoomRenderings()}>
+            {genRoomsBusy ? `渲染图生成中 ${genRoomsProgress}…` : '生成空间效果图'}
+          </button>
+          <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
+            基于房型图房间（{(studioRects.length ? studioRects.map(r => r.name) : (plan?.rooms ?? []).map(r => r.name)).join('、') || '识别后可用'}）· 共 {(studioRects.length || (plan?.rooms ?? []).length) || 0} 间，有几个生成几张 · {data.project.style} 风格
+          </span>
+        </div>
+        {studioRects.length === 0 && (
+          <div className="notice notice-warn" style={{ margin: '8px 0 4px', fontSize: 12 }}>
+            还没有户型图：下面的房间和门窗是系统按面积估的，不是真实布局，渲染图只是示意，也不会核对。
+            请在上方工作台上传户型图（或框出房间），点击「识别房间」，核对门窗后再生成。
+          </div>
+        )}
+        {/* 房间选择 */}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '12px 0 16px' }}>
+            {decorations.map((d, i) => {
+              const dup = decorations.filter(x => x.room === d.room).length > 1;
+              const ord = decorations.slice(0, i).filter(x => x.room === d.room).length + 1;
+              return (
+                <button
+                  key={`${i}-${d.room}`}
+                  onClick={() => setSelectedIdx(i)}
+                  className={`btn ${selectedIdx === i ? 'btn-primary' : 'btn-ghost'}`}
+                  style={{ fontSize: 12, padding: '5px 14px' }}
+                >
+                  {d.room}{dup ? ` ${ord}` : ''}
+                </button>
+              );
+            })}
+          </div>
+          {/* 当前房间装饰图 */}
+          {(() => {
+            const cur = decorations[selectedIdx];
+            if (!cur) return null;
+            return (
+              <div style={{ borderRadius: 12, overflow: 'hidden', border: '1px solid var(--border-strong)', background: 'var(--bg-deep)' }}>
+                {cur.url ? (
+                  <img src={cur.url} alt={cur.room} style={{ width: '100%', maxHeight: 400, objectFit: 'cover', display: 'block' }} />
+                ) : cur.b64 ? (
+                  <img src={`data:image/png;base64,${cur.b64}`} alt={cur.room} style={{ width: '100%', maxHeight: 400, objectFit: 'cover', display: 'block' }} />
+                ) : (
+                  <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-dim)' }}>图片生成中或失败，请通过下方对话重新生成</div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* 这张图的核对状态：对不对、有没有核对、户型改了之后是否已过期 */}
+          {(() => {
+            const cur = decorations[selectedIdx];
+            if (!cur || !(cur.url || cur.b64)) return null;
+            const ord = decorations.slice(0, selectedIdx).filter(x => x.room === cur.room).length;
+            const status = renderStatus(cur, planRooms().filter(r => r.name === cur.room)[ord]);
+            return (
+              <div className={`notice ${status.tone === 'ok' ? 'notice-ok' : status.tone === 'warn' ? 'notice-warn' : ''}`} style={{ marginTop: 10, fontSize: 12 }}>
+                {status.text}
+              </div>
+            );
+          })()}
+
+          {/* 历史版本：点击缩略图恢复 */}
+          {(() => {
+            const hist = decorations[selectedIdx]?.history ?? [];
+            if (hist.length === 0) return null;
+            return (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 8 }}>
+                  历史版本 · {hist.length}（点击缩略图恢复）
+                </div>
+                <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
+                  {hist.map((v, k) => ({ v, k })).reverse().map(({ v, k }) => (
+                    <button
+                      key={k}
+                      type="button"
+                      disabled={chatBusy}
+                      onClick={() => restoreVersion(k)}
+                      title={versionLabel(v.prompt)}
+                      style={{ flex: '0 0 auto', width: 128, padding: 0, border: '1px solid var(--border-strong)', borderRadius: 8, overflow: 'hidden', background: 'var(--bg-card)', cursor: chatBusy ? 'not-allowed' : 'pointer', textAlign: 'left' }}
+                    >
+                      {v.url || v.b64 ? (
+                        <img src={v.url ?? `data:image/png;base64,${v.b64}`} alt={versionLabel(v.prompt)} loading="lazy" style={{ width: '100%', height: 76, objectFit: 'cover', display: 'block' }} />
+                      ) : (
+                        <div style={{ height: 76, background: 'var(--bg-deep)' }} />
+                      )}
+                      <div style={{ fontSize: 11, padding: '4px 8px', color: 'var(--text-dim)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {versionLabel(v.prompt)}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* 对话修改区 */}
+          <div style={{ marginTop: 16, border: '1px solid #e4d6bd', borderRadius: 12, overflow: 'hidden' }}>
+            <div style={{ padding: '10px 14px', background: 'var(--accent2-soft)', fontSize: 12, fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>💬 对话修改装饰图 — 当前：{decorations[selectedIdx]?.room || '选择房间'}</span>
+              <span className="tag tag-purple" style={{ fontSize: 10 }}>AGNES AI</span>
+            </div>
+            {/* 消息列表 */}
+            <div style={{ maxHeight: 260, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {chatMessages.length === 0 && (
+                <div style={{ textAlign: 'center', padding: '14px 0 6px' }}>
+                  <p style={{ color: 'var(--text-dim)', fontSize: 12, lineHeight: 1.9 }}>
+                    输入修改意见，重新生成空间效果图；也可以直接点用常用改法。
+                  </p>
+                  <div className="suggest-row">
+                    {['换成蓝色沙发', '增加绿植', '改成暖色调灯光', '换胡桃木家具'].map(s => (
+                      <button key={s} type="button" className="suggest-chip" disabled={chatBusy}
+                        onClick={() => setChatInput(s)}>{s}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {chatMessages.map((m, i) => (
+                <div key={i} style={{
+                  alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
+                  maxWidth: '80%',
+                  padding: '8px 12px',
+                  borderRadius: 10,
+                  background: m.role === 'user' ? 'var(--accent-soft)' : 'var(--accent2-soft)',
+                  border: `1px solid ${m.role === 'user' ? 'var(--border-strong)' : '#e4d6bd'}`,
+                  fontSize: 12.5,
+                  lineHeight: 1.5,
+                }}>
+                  <div>{m.content}</div>
+                  {m.imageUrl && <img src={m.imageUrl} alt="" style={{ width: '100%', borderRadius: 8, marginTop: 8 }} />}
+                </div>
+              ))}
+              {chatBusy && (
+                <div style={{ alignSelf: 'flex-start', color: 'var(--text-dim)', fontSize: 12, padding: '4px 0' }}>
+                  <span style={{ animation: 'pulse 1s infinite' }}>⟳ 正在生成...</span>
+                </div>
+              )}
+            </div>
+            {/* 输入框 */}
+            <div style={{ display: 'flex', gap: 8, padding: '10px 14px', borderTop: '1px solid #e4d6bd' }}>
+              <input
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendChat(); } }}
+                placeholder={`修改 ${decorations[selectedIdx]?.room || '房间'} 的装饰图...`}
+                style={{ flex: 1, padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 13, outline: 'none' }}
+                disabled={chatBusy}
+              />
+              <button onClick={() => void sendChat()} disabled={chatBusy || !chatInput.trim()} className="btn btn-primary" style={{ fontSize: 12, padding: '8px 18px' }}>
+                {chatBusy ? '...' : '发送'}
+              </button>
+            </div>
+          </div>
+        </section>
+
+      {/* 3D 视图 */}
+      {(customGeom || (plan?.rooms && plan.rooms.length > 0)) && (() => {
+        const useUser = fpSource === 'user' && customGeom;
+        const effGeom = useUser ? customGeom : (plan?.geometry ?? null);
+        const effRooms = useUser ? customGeom!.rooms : (plan?.rooms || []);
+        const effWarnings = useUser ? customGeom!.warnings : (plan?.warnings ?? []);
+        return (
+          <section className="panel" style={{ marginTop: 18 }}>
+            <div className="panel-title">
+              <div className="accent-bar" />
+              3D 设计模型（户型 · 材质 · 家具）
+              <small>{activeSceneModel ? `3D 场景 · ${activeSceneModel.materialPreset.name} · 可导出` : (useUser ? '来源：用户户型图' : '户型几何重建')}</small>
+            </div>
+            {customGeom && plan?.geometry && (
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <button className={useUser ? 'btn btn-primary' : 'btn btn-ghost'} style={{ fontSize: 12, padding: '4px 12px' }}
+                  onClick={() => setFpSource('user')}>按我的户型图</button>
+                <button className={!useUser ? 'btn btn-primary' : 'btn btn-ghost'} style={{ fontSize: 12, padding: '4px 12px' }}
+                  onClick={() => setFpSource('agent')}>自动布局</button>
+              </div>
+            )}
+            <Suspense fallback={<div style={{ padding: 40, textAlign: 'center', color: 'var(--text-dim)' }}>Loading 3D...</div>}>
+              <Scene3D geometry={effGeom} rooms={effRooms} presetId={activeSceneModel?.materialPresetId as MaterialPresetId | undefined}
+                onPresetChange={async materialPresetId => {
+                  const response = await fetch('/api/pascal/edit', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ projectId: Number(id), sceneModel: activeSceneModel, action: { type: 'set_material_preset', materialPresetId } }) });
+                  if (!response.ok) throw new Error('材质保存失败');
+                }} />
+            </Suspense>
+            <PascalBridge
+              projectId={Number(id)}
+              sceneModel={activeSceneModel}
+              onImported={(model) => {
+                setCustomGeom(model.geometry);
+                setFpSource('user');
+              }}
+            />
+            {effWarnings.length > 0 && (
+              <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: 'var(--warn-bg)', border: '1px solid #f0d9a4', fontSize: 11, color: 'var(--text-dim)' }}>
+                ⚠ 空间校验提示：{effWarnings.join('；')}
+              </div>
+            )}
+          </section>
+        );
+      })()}
+
+      {quote?.items && (
+        <section className="panel" style={{ marginTop: 18 }}>
+          <div className="panel-title">
+            <div className="accent-bar" />
+            费用计算 · 材料清单与报价工期
+            <small>约 {quote.weeks} 周 · 报价师「小算」</small>
+          </div>
+          <div className="swatch-row" style={{ marginTop: -2, marginBottom: 16 }}>
+            <span>材料意向</span>
+            <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#e8e4dd,#cfc7bb)' }} /><b>岩板</b></div>
+            <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#7a5a41,#a67c52)' }} /><b>胡桃木</b></div>
+            <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#c9a227,#e8d9a0)' }} /><b>黄铜</b></div>
+            <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#d9d4cc,#b9b2a8)' }} /><b>微水泥</b></div>
+          </div>
+          <table className="data-table">
+            <thead>
+              <tr><th>项目</th><th>数量</th><th>单价</th><th>费用</th></tr>
+            </thead>
+            <tbody>
+              {quote.items.map((it, i) => (
+                <tr key={i}>
+                  <td>{it.item}{it.source && <div style={{ color: 'var(--text-dim)', fontSize: 10, marginTop: 2 }}>依据：{it.source}</div>}</td>
+                  <td>{it.qty}{it.unit}</td>
+                  <td>¥{(it.price ?? 0).toLocaleString()}</td>
+                  <td style={{ textAlign: 'right' }}>¥{it.total.toLocaleString()}</td>
+                </tr>
+              ))}
+              <tr>
+                <td style={{ fontWeight: 700 }}>合计</td>
+                <td />
+                <td />
+                <td style={{ textAlign: 'right', fontWeight: 700 }}>¥{(quote.total ?? 0).toLocaleString()}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p style={{ color: 'var(--text-dim)', fontSize: 12, marginTop: 10 }}>
+            工期：{quote.schedule?.map(s => `${s.phase} ${s.weeks}周`).join(' → ')}
+          </p>
+          {quote.note && <p style={{ color: 'var(--text-dim)', fontSize: 11, marginTop: 4 }}>{quote.note}</p>}
+
+          {/* 报价确认：清单合计 → 调整 → 最终确认 */}
+          <div className="review-strip">
+            <div className="review-copy">
+              <div className="brief-eyebrow">FINAL REVIEW · 方案确认</div>
+              <div className="review-figures">
+                <div className="review-fig">
+                  <span>清单合计</span>
+                  <b>¥{(quote.total ?? 0).toLocaleString()}</b>
+                </div>
+                <div className="review-fig">
+                  <span>调整幅度</span>
+                  <div className="review-adjust">
+                    <input
+                      type="number" step="1" value={adjustPct}
+                      onChange={e => setAdjustPct(Number(e.target.value) || 0)}
+                      disabled={!!decision}
+                      aria-label="报价调整百分比"
+                    />
+                    <em>%</em>
+                  </div>
+                </div>
+                <div className="review-fig">
+                  <span>调整后</span>
+                  <b className="accent">¥{Math.round((quote.total ?? 0) * (1 + adjustPct / 100)).toLocaleString()}</b>
+                </div>
+              </div>
+            </div>
+            <div className="review-action">
+              {decision ? (
+                <div className="review-confirmed">
+                  <span>✓ 已最终确认</span>
+                  <p>确认价 ¥{decision.finalTotal.toLocaleString()} · {decision.confirmedAt.slice(0, 10)} · 已自动发布到接单市场</p>
+                </div>
+              ) : (
+                <>
+                  <button className="btn btn-primary review-btn" disabled={confirmBusy} onClick={() => void finalConfirm()}>
+                    {confirmBusy ? '确认中…' : '✓ 最终确认方案'}
+                  </button>
+                  <p>可先在上方对话修改房间效果；确认后自动发布到接单市场。</p>
+                </>
+              )}
+            </div>
+            <div className="review-trust">
+              平台服务费仅向装修公司收取，业主不向平台付费 · 报价含材料清单与工期，最终以签约量房为准
+            </div>
+          </div>
+        </section>
+      )}
+
+      {matchCount > 0 && (
+        <section className="panel" style={{ marginTop: 18 }}>
+          <div className="panel-title">
+            <div className="accent-bar" />
+            匹配的装修队
+            <small>{match!.matchedBy === 'mimo' ? '第二智能体「小桥」· MiMo 按真实投标匹配' : '匹配师「小桥」按规则评分匹配'} · 脱敏信息</small>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '12px 0 4px' }}>
+            <div className="record-mark lg">桥</div>
+            <div style={{ fontSize: 12.5, lineHeight: 1.6 }}>
+              <b>小桥 · 匹配智能体{match!.matchedBy === 'mimo' ? '（MiMo）' : ''}</b>
+              <span style={{ color: 'var(--text-dim)' }}>　{match!.matchedBy === 'mimo'
+                ? (match!.summary || 'MiMo 阅读你的需求、户型和报价，对已审核且会员有效的装修队真实投标逐一评估排序。')
+                : (match!.summary || '基于真实投标（报价 / 工期）与资质档案打分匹配。')}选定装修队由你决定。</span>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14, marginTop: 14 }}>
+            {match!.contractors!.map((c, i) => (
+              <div key={i} className="contractor-card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                  <span className="name">{c.name}</span>
+                  <span className="tag tag-orange">{c.score != null ? `匹配度 ${c.score}%` : `★${c.rating ?? '-'}`}</span>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '8px 0' }}>
+                  <span className={`tag ${c.verified ? 'tag-green' : 'tag-cyan'}`}>{c.verified ? '✓ 资质已人工审核' : '◌ 资质待审核'}</span>
+                  <span className="tag tag-purple">{getMembershipTier(c.membershipTier).badge}</span>
+                  {c.amount != null && c.weeks != null && <span className="tag tag-orange">投标 ¥{c.amount} · {c.weeks} 周</span>}
+                  {c.types?.map(t => <span key={t} className="tag tag-purple">{t}</span>)}
+                  {c.districts?.map(d => <span key={d} className="tag tag-cyan">📍{d}</span>)}
+                </div>
+                <div className="meta">
+                  匹配理由：{c.reason}
+                </div>
+              </div>
+            ))}
+          </div>
+          {!!match!.products?.length && (
+            <div style={{ marginTop: 18 }}>
+              <b style={{ fontSize: 13 }}>小桥为各房间挑选的智能家居</b>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginTop: 10 }}>
+                {match!.products.map(p => (
+                  <a key={p.id} href={p.officialUrl} target="_blank" rel="noreferrer" className="contractor-card" style={{ display: 'flex', gap: 10, alignItems: 'center', textDecoration: 'none', color: 'inherit' }}>
+                    <img src={p.imageUrl} alt="" loading="lazy" style={{ width: 56, height: 56, objectFit: 'contain', background: '#eeeae2', borderRadius: 8, flexShrink: 0 }} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600 }}>{p.name}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{p.room} · {p.category}</div>
+                      {p.reason && <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>{p.reason}</div>}
+                    </div>
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+          {match!.note && <p style={{ color: 'var(--text-dim)', fontSize: 11, marginTop: 12 }}>{match!.note}</p>}
+        </section>
+      )}
+
+      {/* 设计执行记录：细线日志，克制的流程档案 */ }
+      <section className="panel" style={{ marginTop: 18 }}>
+        <div className="panel-title">
+          <div className="accent-bar" />
+          设计执行记录
+          <small className="record-live"><i /> 实时更新</small>
+        </div>
+
+        {/* 流程总进度 */}
+        <div className="record-progress">
+          <div className="record-progress-label">
+            <span>PROCESS · 流程进度</span>
+            <b>{doneCount} / {STAGES.length}</b>
+          </div>
+          <div className="brief-bar"><i style={{ width: `${progress}%` }} /></div>
+        </div>
+
+        {/* 任务流转链：真实 fromAgent → toAgent */}
+        {tasks.length > 0 && (
+          <div className="flow-strip">
+            <div className="flow-strip-label">任务流转 · TASK HANDOFF</div>
+            <div className="flow-chain">
+              {[...tasks].sort((a, b) => a.id - b.id).map((t, i) => {
+                const from = agentOf(t.fromAgent);
+                const to = agentOf(t.toAgent);
+                return (
+                  <Fragment key={t.id}>
+                    {i === 0 && (
+                      <span className="flow-node">
+                        <div className="record-mark">{from.name.slice(-1)}</div>
+                        <span className="flow-node-name">{from.name}</span>
+                        <span className="flow-node-role">{from.role}</span>
+                      </span>
+                    )}
+                    <span className="flow-arrow">→</span>
+                    <span className="flow-node">
+                      <div className="record-mark">{to.name.slice(-1)}</div>
+                      <span className="flow-node-name">{to.name}</span>
+                      <span className="flow-node-role">{to.role}</span>
+                      <span className="flow-node-id">#{t.id}</span>
+                      {t.status === 'done' && <span className="flow-flag done">✓</span>}
+                      {t.status === 'running' && <span className="flow-flag running">●</span>}
+                      {t.status === 'failed' && <span className="flow-flag failed">✕</span>}
+                    </span>
+                  </Fragment>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* 阶段日志 */}
+        <div className="record-list">
+          {STAGES.map((s, i) => {
+            const a = agentOf(s.key);
+            // 以该智能体最新一次任务为准：重跑后不再显示旧任务的状态
+            const task = data.tasks.filter(t => t.toAgent === s.key).sort((x, y) => y.id - x.id)[0];
+            const status = !task ? 'pending' : task.status === 'done' ? 'done' : task.status === 'running' ? 'running'
+              : task.status === 'failed' ? 'failed' : task.status === 'waiting_user' ? 'waiting' : task.status === 'escalated' ? 'escalated' : 'pending';
+            return (
+              <div key={s.key} className={`record-row ${status}`}>
+                <div className="record-idx">{String(i + 1).padStart(2, '0')}</div>
+                <div className="record-mark lg">{a.name.slice(-1)}</div>
+                <div className="record-main">
+                  <div className="record-title">
+                    {s.label}
+                    <span>　{a.name} · {a.role}</span>
+                  </div>
+                  <div className="record-sub">
+                    {status === 'done' ? '该阶段已完成' : status === 'running' ? '正在执行，请稍候' : status === 'failed' ? '执行失败，等待处理'
+                      : status === 'waiting' ? `等待您补充：${String(task?.output?.ask ?? task?.output?.exception?.detail ?? '请补充信息后继续')}`
+                      : status === 'escalated' ? '已转平台人工处理' : task ? '排队中' : '等待前序阶段完成'}
+                    {task && <em>Task #{task.id}</em>}
+                  </div>
+                </div>
+                <div className={`record-status ${status}`}>
+                  {status === 'done' ? '✓ 已完成' : status === 'running' ? '● 执行中' : status === 'failed' ? '✕ 失败' : status === 'waiting' ? '⏳ 待补充' : status === 'escalated' ? '⚠ 人工处理' : '○ 等待中'}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {!match && (
+          <div className="record-foot">
+            <i /> {waitingTasks.length ? '流水线已暂停 — 请按上方提示补充户型信息（上传户型图，或在画板标注房间后点「按此图生成 3D」）' : escalatedTasks.length ? '流水线已暂停 — 等待平台人工处理' : '设计方案生成中 — 这里会实时记录每一步'}
+          </div>
+        )}
+      </section>
+
+      {/* 发布 · 竞标 · 匹配（第二阶段：等待业主确认 → 发布 → 等待装修公司发布数据（投标）→ 匹配智能体匹配） */}
+      <section className="panel" style={{ marginTop: 18 }}>
+        <div className="panel-title">
+          <div className="accent-bar" />
+          发布 · 竞标 · 匹配
+          <small>业主确认后发布，施工方报价后进行综合匹配</small>
+        </div>
+        <div className="match-layout">
+          <div className="match-steps">
+            {[
+              {
+                label: '① 业主最终确认', ok: !!decision, pending: !decision && !!quote,
+                hint: decision ? `确认价 ¥${decision.finalTotal.toLocaleString()}` : (quote ? '等待你在报价区确认方案' : '等待报价生成'),
+              },
+              {
+                label: '② 发布到接单市场', ok: !!order, pending: !!decision && !order,
+                hint: order ? `ORDER_${order.id} 已发布` : '业主确认后自动发布',
+              },
+              {
+                label: '③ 装修公司发布数据（投标）', ok: bids.length > 0, pending: !!order && bids.length === 0,
+                hint: bids.length > 0 ? `${bids.length} 家已投标` : (order ? '等待装修公司发布投标数据…' : '发布后装修公司可投标'),
+              },
+              {
+                label: '④ 综合匹配', ok: matchCount > 0, pending: matcherBusy || (bids.length > 0 && matchCount === 0),
+                hint: matchCount > 0 ? `已匹配 ${matchCount} 家` : (matcherBusy ? '匹配中…' : (bids.length > 0 ? '待匹配' : '等待投标数据')),
+              },
+            ].map((s, i) => (
+              <div key={i} style={{
+                padding: '12px 14px', borderRadius: 12,
+                border: `1px solid ${s.ok ? '#bfe3d0' : s.pending ? 'var(--border-strong)' : 'var(--border)'}`,
+                background: s.ok ? 'var(--ok-bg)' : s.pending ? 'var(--accent-soft)' : 'rgba(255,255,255,.42)',
+              }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, color: s.ok ? 'var(--accent3)' : s.pending ? 'var(--accent)' : 'var(--text-dim)' }}>
+                  {s.ok ? '✓ ' : s.pending ? '● ' : '○ '}{s.label}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 6 }}>{s.hint}</div>
+              </div>
+            ))}
+          </div>
+          <aside className="match-aside" style={{ backgroundImage: `url("${INTERIOR_IMAGES.architecture}")` }}>
+            <div className="match-aside-copy">
+              <span>FROM DRAWING TO SITE</span>
+              <h4>从图纸到现场</h4>
+              <p>确认方案后自动发布到接单市场，装修公司按真实报价与工期投标，平台协同记录，方案与履约逐项可核对。</p>
+            </div>
+          </aside>
+        </div>
+        {doneCount === STAGES.length && !order && !decision && (
+          <button onClick={publishProject} className="btn btn-primary" style={{ marginTop: 12 }}>发布项目</button>
+        )}
+      </section>
+
+      {/* 竞标动态 */}
+      {order && (order.status === 'open' || order.status === 'bidding') && (
+        <section className="panel" style={{ marginTop: 18 }}>
+          <div className="panel-title">
+            <div className="accent-bar" />
+            竞标动态
+            <small>ORDER_{order.id}</small>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+            {orderStatusTag(order.status)}
+            <button onClick={() => setShowRecommend(v => !v)} className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 12px' }}>
+              推荐匹配
+            </button>
+          </div>
+          {showRecommend && (
+            <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 10, background: 'var(--accent2-soft)', border: '1px solid #e4d6bd', fontSize: 12, color: 'var(--text)' }}>
+              <span className="tag tag-purple" style={{ marginRight: 8 }}>优选推荐</span>
+              {recommended
+                ? `${recommended.name}（${recommended.score != null ? `匹配度 ${recommended.score}%` : `★${recommended.rating ?? '-'}`}）· 匹配理由：${recommended.reason}`
+                : '暂无 优选推荐结果'}
+            </div>
+          )}
+          {bids.length === 0 && (
+            <p style={{ color: 'var(--text-dim)', fontSize: 12.5, margin: '12px 0 4px' }}>
+              ⏳ 已发布到接单市场，正在等待装修公司发布投标数据…（收到报价后自动开始综合匹配）
+            </p>
+          )}
+          {bids.length > 0 && <div className="wf-table-wrap"><table className="data-table" style={{ marginTop: 14 }}><thead><tr><th>装修公司</th><th>报价（万元）</th><th>工期（周）</th><th>承接选择</th></tr></thead><tbody>{bids.map(b => <tr key={b.id}><td>{b.companyName}</td><td>{b.amount}</td><td>{b.weeks}</td><td><button type="button" className="btn btn-primary" disabled={bidBusy} onClick={() => void chooseBid(b)}>{bidBusy ? '选择中…' : '选择该公司'}</button></td></tr>)}</tbody></table></div>}
+        </section>
+      )}
+
+      {/* 底部流水线标注 */}
+
+      {order && order.companyId !== null && !['open', 'bidding'].includes(order.status) && <ContractWorkbench key={order.id} orderId={order.id} role="homeowner" />}
+      <div className="closing-steps">
+        <span>STEP 01 识别 → 设计</span>
+        <i />
+        <span>STEP 02 报价 → 工期</span>
+        <i />
+        <span>STEP 03 匹配 → 交付</span>
+      </div>
+
+      <p style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 11, marginTop: 20 }}>
+        予舍 · 住宅设计与装修平台 · 生成结果供参考，最终以签约量房为准
+      </p>
+    </main>
+  );
+}

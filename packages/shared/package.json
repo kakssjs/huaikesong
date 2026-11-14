@@ -1,0 +1,61 @@
+{
+  "name": "@i-renovation/shared",
+  "version": "0.1.0",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.15",
+    "drizzle-orm": "^0.45.4",
+    "sharp": "0.35.5"
+  },
+  "exports": {
+    "./workflow": {
+      "types": "./src/workflow.ts",
+      "default": "./src/workflow.ts"
+    },
+    "./workflow-db": {
+      "types": "./src/workflow-db.ts",
+      "default": "./src/workflow-db.ts"
+    },
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./plan": {
+      "types": "./src/plan.ts",
+      "default": "./src/plan.ts"
+    },
+    "./price": {
+      "types": "./src/price.ts",
+      "default": "./src/price.ts"
+    },
+    "./materials": {
+      "types": "./src/materials.ts",
+      "default": "./src/materials.ts"
+    },
+    "./scene3d": {
+      "types": "./src/scene3d.ts",
+      "default": "./src/scene3d.ts"
+    },
+    "./furniture": {
+      "types": "./src/furniture.ts",
+      "default": "./src/furniture.ts"
+    },
+    "./membership": {
+      "types": "./src/membership.ts",
+      "default": "./src/membership.ts"
+    },
+    "./commission": {
+      "types": "./src/commission.ts",
+      "default": "./src/commission.ts"
+    },
+    "./fair-bidding": {
+      "types": "./src/fair-bidding.ts",
+      "default": "./src/fair-bidding.ts"
+    },
+    "./marketplace": {
+      "types": "./src/marketplace.ts",
+      "default": "./src/marketplace.ts"
+    }
+  }
+}

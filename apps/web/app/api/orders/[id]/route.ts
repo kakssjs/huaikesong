@@ -1,0 +1,53 @@
+import { NextResponse } from 'next/server';
+import { getOrder, selectOrderCompany } from '@i-renovation/shared';
+import { companyCanSeeOrder, forbidden, isOrderParty, requireSession } from '@/lib/auth';
+
+type OrderPatch = {
+  companyId?: number;
+  status?: string;
+  bidAmount?: string;
+  bidWeeks?: string;
+  bidNote?: string;
+  matchScore?: string;
+  homeownerConfirmedAt?: string;
+  companyConfirmedAt?: string;
+  confirmedAt?: string;
+  contractedAt?: string;
+};
+
+export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  try {
+    const s = await requireSession(req); if (s instanceof NextResponse) return s;
+    const id = Number((await ctx.params).id);
+    if (!Number.isFinite(id)) return NextResponse.json({ error: '缺少有效的 id' }, { status: 400 });
+
+    const order = await getOrder(id);
+    if (!order) return NextResponse.json({ error: '订单不存在' }, { status: 404 });
+    if (!isOrderParty(s, order) && !(await companyCanSeeOrder(s, order))) return forbidden();
+    return NextResponse.json(order);
+  } catch {
+    return NextResponse.json({ error: '查询订单失败' }, { status: 400 });
+  }
+}
+
+export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  try {
+    const s = await requireSession(req, ['homeowner', 'boss']); if (s instanceof NextResponse) return s;
+    const id = Number((await ctx.params).id);
+    if (!Number.isFinite(id)) return NextResponse.json({ error: '缺少有效的 id' }, { status: 400 });
+
+    const existing = await getOrder(id);
+    if (!existing) return NextResponse.json({ error: '订单不存在' }, { status: 404 });
+    if (!isOrderParty(s, existing)) return forbidden();
+
+    const body = (await req.json()) as OrderPatch;
+    if (body.status !== 'matched' || !Number.isSafeInteger(Number(body.companyId)) ||
+        Object.keys(body).some(k => !['status', 'companyId', 'bidAmount', 'bidWeeks'].includes(k))) {
+      return NextResponse.json({ error: '只能选定真实投标公司，确认与签约请使用对应操作' }, { status: 400 });
+    }
+    const updated = await selectOrderCompany(id, Number(body.companyId));
+    return NextResponse.json(updated);
+  } catch {
+    return NextResponse.json({ error: '更新订单失败' }, { status: 400 });
+  }
+}

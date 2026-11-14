@@ -1,0 +1,16 @@
+node_modules/
+.next/
+dist/
+*.tsbuildinfo
+.env
+.env.local
+uploads/
+
+# local database (accounts, projects) and build folders: never publish
+.pglite-data/
+.next*/
+scripts/.regression/
+scripts/.contract-http/
+scripts/.workflow-regression/
+scripts/.workflow-test/
+.demo-data/

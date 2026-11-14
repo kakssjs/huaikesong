@@ -1,0 +1,22 @@
+{
+  "name": "i-renovation",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w apps/web",
+    "dev:worker": "npm run dev -w apps/worker",
+    "build": "npm run build -w apps/web && npm run build -w apps/worker",
+    "typecheck": "tsc -b",
+    "test": "node --test scripts/regression.cjs && node --test scripts/workflow.test.cjs && node --test scripts/contract-agent.test.cjs && node --test scripts/workflow-ui.test.cjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

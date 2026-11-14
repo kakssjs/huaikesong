@@ -12,7 +12,7 @@
 
 最新验证：**49 项自动测试、类型检查、Web/Worker 构建、17 次隔离 HTTP 检查通过**，独立复查未发现新增阻断性问题。HTTP 使用合成保存成果，没有真实模型或支付调用。失败复现和修复过程保留在开发文档。
 
-本轮代码与开发文档同批同步，旧 V3 源码包不含新增内容。新版本地预览为 `http://127.0.0.1:3303/opc`（仅本机）；真实模型预演、完整浏览器验收、严格并发版本一致性与新压缩包仍待完成，不代表已完成最终赛场验收。
+本轮代码与开发文档同批同步，旧 V3 源码包不含新增内容。新版本地预览为 `http://127.0.0.1:3303/opc`（仅本机）；真实模型预演（仅 1 张真实户型图）、业主端以外的浏览器验收、严格并发版本一致性与新压缩包仍待完成，不代表已完成最终赛场验收。
 
 ## 产品与交付
 
@@ -59,7 +59,7 @@ NODE_ENV=production npm run start -w apps/web -- -H 127.0.0.1 -p 3200
 
 线上由 systemd 管理，前端需要 HTTPS 才能使用安全登录 Cookie。`IRENO_PGLITE_DIR` 和 `IRENO_UPLOAD_DIR` 应指向绝对路径并备份；不要在多个服务进程中打开同一个 PGlite 目录。大模型（默认 DeepSeek，由 `LLM_API_KEY` 等环境变量配置）负责识别，Agnes 负责图像，支付凭证只给服务端读取。邮箱未启用时手机号密码登录仍可使用。
 
-`npm test` 使用临时数据库并在结束后清理。`scripts/acceptance.mjs`、`scripts/media-acceptance.mjs` 和 `scripts/browser-acceptance.cjs` 是本次隔离验收工具，不能直接对生产数据运行。正向企业会员测试的模拟权益仅由验收服务预加载 `scripts/test-payments.cjs`；生产服务禁止加载它。
+`npm test` 使用临时数据库并在结束后清理。`scripts/acceptance.mjs`、`scripts/media-acceptance.mjs` 和 `scripts/browser-acceptance.cjs` 是本次隔离验收工具，不能直接对生产数据运行。`browser-acceptance.cjs` 自带隔离数据库和服务：`npm run build` 后运行 `node scripts/browser-acceptance.cjs --isolated-demo`，可用 `PLAYWRIGHT_CORE_PATH`、`CHROME_PATH`、`BROWSER_ACCEPTANCE_OUT` 指定 Playwright、Chrome 和输出目录；`acceptance.mjs` 与 `media-acceptance.mjs` 仍引用旧部署路径，不能直接使用。正向企业会员测试的模拟权益仅由验收服务预加载 `scripts/test-payments.cjs`；生产服务禁止加载它。
 
 ## 已实现
 

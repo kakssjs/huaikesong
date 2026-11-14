@@ -1,49 +1,214 @@
-const { chromium } = require('D:/chatgpt/3dgongfang/studio/node_modules/playwright-core');
+// Browser acceptance against an isolated production server with synthetic data. No model or payment calls.
+// Usage: node scripts/browser-acceptance.cjs --isolated-demo
+// Playwright is resolved from PLAYWRIGHT_CORE_PATH, then the repo, then a few known local installs.
+// Chrome is resolved from CHROME_PATH, then the usual install locations. Output goes to BROWSER_ACCEPTANCE_OUT or the temp dir.
 const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
-const state = JSON.parse(fs.readFileSync('D:/chatgpt/3dgongfang/runtime/acceptance-state.json', 'utf8'));
-(async () => {
-  const browser = await chromium.launch({ headless: true, executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe',
-    args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
-  const report = [];
-  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-    const context = await browser.newContext({ viewport, isMobile: viewport.width < 500, hasTouch: viewport.width < 500, acceptDownloads: true });
-    const page = await context.newPage();
-    const errors = [];
-    page.on('pageerror', e => errors.push(e.message));
-    await page.goto('http://localhost:3400/', { waitUntil: 'networkidle' });
-    await page.locator('[data-auth="login"]').click();
-    await page.getByPlaceholder('请输入注册手机号').fill(state.owner.phone);
-    await page.getByPlaceholder('请输入密码', { exact: true }).fill(state.owner.password);
-    await page.getByRole('button', { name: '登录', exact: true }).last().click();
-    await page.waitForFunction(() => !!JSON.parse(localStorage.getItem('user') || '{}').id);
-    await page.goto('http://localhost:3400/dashboard', { waitUntil: 'networkidle' });
-    await page.locator('input[name="name"]').fill('浏览器验收 ' + viewport.width);
-    await page.locator('input[name="area"]').fill('56');
-    await page.locator('input[name="budget"]').fill('15');
-    await page.locator('textarea[name="needs"]').fill('验收测试，非真实用户项目');
-    await page.locator('form').filter({ has: page.locator('input[name="name"]') }).locator('button[type="submit"],button:not([type])').last().click();
-    await page.waitForURL(/\/project\/\d+/, { timeout: 20000 });
-    const projectURL = page.url();
-    await page.reload({ waitUntil: 'networkidle' });
-    await page.getByText('浏览器验收 ' + viewport.width, { exact: false }).first().waitFor();
-    await page.screenshot({ path: `D:/chatgpt/3dgongfang/output/browser-save-${viewport.width}.png`, fullPage: true });
-    await page.goto(`http://localhost:3400/project/${state.id}`, { waitUntil: 'networkidle' });
-    await page.getByRole('button', { name: '俯视', exact: true }).first().click();
-    await page.getByRole('button', { name: '透视', exact: true }).first().click();
-    const downloadPromise = page.waitForEvent('download', { timeout: 20000 });
-    await page.getByRole('button', { name: '导出 Blender / Pascal', exact: true }).click();
-    const download = await downloadPromise;
-    assert.ok(download.suggestedFilename().endsWith('.glb'));
-    await download.saveAs(`D:/chatgpt/3dgongfang/output/scene-${viewport.width}.glb`);
-    await page.screenshot({ path: `D:/chatgpt/3dgongfang/output/browser-design-${viewport.width}.png`, fullPage: true });
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2);
-    assert.equal(overflow, false, `horizontal overflow at ${viewport.width}`);
-    assert.deepEqual(errors, []);
-    report.push({ width: viewport.width, login: true, saveAndReload: true, views3D: true, exportGLB: true, overflow, errors });
-    await context.close();
+const { spawn } = require('node:child_process');
+const ts = require('typescript');
+if (process.argv[2] !== '--isolated-demo') throw new Error('Explicit --isolated-demo is required');
+
+const root = path.resolve(__dirname, '..');
+const firstExisting = list => list.filter(Boolean).find(p => fs.existsSync(p));
+const playwrightPath = firstExisting([
+  process.env.PLAYWRIGHT_CORE_PATH,
+  path.join(root, 'node_modules/playwright-core'),
+  path.join(root, 'node_modules/playwright'),
+  'D:/chatgpt/3dgongfang/studio/node_modules/playwright-core',
+]);
+const chromePath = firstExisting([
+  process.env.CHROME_PATH,
+  'C:/Program Files/Google/Chrome/Application/chrome.exe',
+  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+  'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+  '/usr/bin/google-chrome', '/usr/bin/chromium', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+]);
+if (!playwrightPath) throw new Error('playwright-core not found: set PLAYWRIGHT_CORE_PATH to its folder');
+if (!chromePath) throw new Error('Chrome/Edge not found: set CHROME_PATH to the executable');
+const { chromium } = require(playwrightPath);
+
+const port = Number(process.env.BROWSER_ACCEPTANCE_PORT || 3322);
+const base = `http://127.0.0.1:${port}`;
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'yushe-browser-'));
+const outDir = process.env.BROWSER_ACCEPTANCE_OUT || path.join(scratch, 'out');
+fs.mkdirSync(outDir, { recursive: true });
+const compiled = path.join(root, 'scripts', '.browser-acceptance');
+fs.mkdirSync(compiled, { recursive: true });
+for (const name of fs.readdirSync(path.join(root, 'packages/shared/src')).filter(f => f.endsWith('.ts'))) {
+  fs.writeFileSync(path.join(compiled, name.replace(/\.ts$/, '.js')), ts.transpileModule(fs.readFileSync(path.join(root, 'packages/shared/src', name), 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+  }).outputText);
+}
+process.env.IRENO_PGLITE_DIR = path.join(scratch, 'db');
+const db = require('./.browser-acceptance/db.js');
+const { calcQuote } = require('./.browser-acceptance/price.js');
+const { generatePlanGeometry, planToSvg } = require('./.browser-acceptance/plan.js');
+const { buildSceneModel } = require('./.browser-acceptance/scene3d.js');
+
+const PASSWORD = 'DemoOnly2026!';
+const OWNER_PHONE = '19900000001';
+const VIEWPORTS = [{ width: 1440, height: 1000 }, { width: 390, height: 844 }];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let server;
+
+async function seed() {
+  const salt = crypto.randomBytes(16);
+  const passwordHash = `scrypt$${salt.toString('base64')}$${crypto.scryptSync(PASSWORD, salt, 32).toString('base64')}`;
+  const owner = await db.createUser({ role: 'homeowner', name: '合成业主', phone: OWNER_PHONE, passwordHash });
+  const rooms = [{ name: '客厅', area: 30 }, { name: '主卧', area: 20 }, { name: '次卧', area: 15 }, { name: '厨房', area: 10 }, { name: '卫生间', area: 8 }];
+  // 每个视口各用一个独立项目：点“重新质检”会新建待执行的质检任务（验收服务器关闭了 Runner），不能影响另一个视口。
+  const projectIds = {};
+  for (const width of VIEWPORTS.map(v => v.width)) {
+    const project = await db.createProject({ homeownerId: owner.id, name: `浏览器验收｜合成项目 ${width}`, style: '现代简约', budget: '15', area: '83', address: 'PRIVATE-ADDRESS' });
+    const geometry = generatePlanGeometry(rooms, { totalArea: 83 });
+    const sceneModel = buildSceneModel(geometry, rooms, project.style, { source: 'floor_plan' });
+    const chain = [
+      ['floor_plan', [['plan', { rooms, geometry, source: 'user_studio', confidence: 'high', note: '合成数据，非模型识别', warnings: geometry.warnings }]]],
+      ['designer', [['design', { svg: planToSvg(geometry, project.style, project.name), rooms, geometry, style: project.style, note: '合成数据' }],
+        ['scene_model', sceneModel], ['decorations', { images: rooms.map(r => ({ room: r.name, url: '/interiors/living.jpg' })), style: project.style }]]],
+      ['quote', [['quote', calcQuote(rooms, project.style)]]],
+      ['qa', [['qa', { passed: true, checks: [], checkedAt: new Date().toISOString(), note: '合成夹具，非实际质检' }]]],
+    ];
+    for (const [i, [agent, results]] of chain.entries()) {
+      const task = await db.claimNextTask(); assert.equal(task.toAgent, agent);
+      for (const [kind, content] of results) await db.upsertResult(project.id, kind, content);
+      await db.finishTask(task.id, { fixtureOnly: true }, 0, chain[i + 1] ? { nextAgent: chain[i + 1][0] } : { stage: 3 });
+    }
+    projectIds[width] = project.id;
   }
-  await browser.close();
-  fs.writeFileSync('D:/chatgpt/3dgongfang/output/browser-acceptance.json', JSON.stringify(report, null, 2));
-  console.log(JSON.stringify(report));
-})().catch(e => { console.error(e); process.exitCode = 1; });
+  await (await db.getDb()).$client.close();
+  return { projectIds };
+}
+
+async function startServer() {
+  const log = fs.openSync(path.join(scratch, 'server.log'), 'a');
+  server = spawn(process.execPath, [path.join(root, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(port)], {
+    cwd: path.join(root, 'apps/web'), windowsHide: true, stdio: ['ignore', log, log],
+    env: { ...process.env, NODE_ENV: 'production', RUNNER_ENABLED: 'false', COOKIE_SECURE: 'false', SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
+      LLM_API_KEY: '', AGNES_API_KEY: '', YIRENFU_API_KEY: '', BOSS_PHONE: '19900000000', BOSS_PASSWORD: crypto.randomBytes(12).toString('hex'),
+      IRENO_PGLITE_DIR: path.join(scratch, 'db'), IRENO_UPLOAD_DIR: path.join(scratch, 'uploads') },
+  });
+  fs.closeSync(log);
+  for (let i = 0; i < 80; i++) {
+    if (server.exitCode !== null) throw new Error('isolated server exited; see ' + scratch);
+    try { if ((await fetch(base + '/api/health')).ok) return; } catch {}
+    await sleep(500);
+  }
+  throw new Error('isolated server did not start');
+}
+
+async function run() {
+  const { projectIds } = await seed();
+  await startServer();
+  const browser = await chromium.launch({ headless: true, executablePath: chromePath, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+  const report = [];
+  try {
+    for (const viewport of VIEWPORTS) {
+      const projectId = projectIds[viewport.width];
+      const context = await browser.newContext({ viewport, isMobile: viewport.width < 500, hasTouch: viewport.width < 500, acceptDownloads: true });
+      const page = await context.newPage();
+      const errors = [];
+      page.on('pageerror', e => errors.push(e.message));
+      const step = { width: viewport.width };
+      const overflow = () => page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2);
+
+      // 首页与导航
+      await page.goto(base + '/', { waitUntil: 'networkidle' });
+      step.homeOverflow = await overflow();
+      await page.screenshot({ path: path.join(outDir, `home-${viewport.width}.png`), fullPage: true });
+
+      // 团队与服务页：四个锚点标题与材料下载链接
+      await page.goto(base + '/opc', { waitUntil: 'networkidle' });
+      for (const title of ['商业模式画布', '岗位说明书', '交付与验收']) await page.getByRole('heading', { name: title }).first().waitFor();
+      step.opcHeadings = true;
+      assert.ok(await page.locator('a[href="/docs/opc-materials.md"]').count() > 0, 'materials download link');
+      step.opcOverflow = await overflow();
+      await page.screenshot({ path: path.join(outDir, `opc-${viewport.width}.png`), fullPage: true });
+
+      // 登录
+      await page.goto(base + '/', { waitUntil: 'networkidle' });
+      await page.locator('[data-auth="login"]').click();
+      await page.getByPlaceholder('请输入注册手机号').fill(OWNER_PHONE);
+      await page.getByPlaceholder('请输入密码', { exact: true }).fill(PASSWORD);
+      await page.getByRole('button', { name: '登录', exact: true }).last().click();
+      await page.waitForFunction(() => !!JSON.parse(localStorage.getItem('user') || '{}').id);
+      step.login = true;
+
+      // 新建项目：保存后刷新仍在
+      await page.goto(base + '/dashboard', { waitUntil: 'networkidle' });
+      const projectName = `浏览器验收新建 ${viewport.width}`;
+      await page.locator('input[name="name"]').fill(projectName);
+      await page.locator('input[name="area"]').fill('56');
+      await page.locator('input[name="budget"]').fill('15');
+      await page.locator('textarea[name="needs"]').fill('验收测试，非真实用户项目');
+      await page.locator('form').filter({ has: page.locator('input[name="name"]') }).locator('button[type="submit"],button:not([type])').last().click();
+      await page.waitForURL(/\/project\/\d+/, { timeout: 20000 });
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.getByText(projectName, { exact: false }).first().waitFor();
+      step.createAndReload = true;
+
+      // 带完整成果的合成项目：交付面板、3D 视角、导出、交付 JSON 下载
+      await page.goto(`${base}/project/${projectId}`, { waitUntil: 'networkidle' });
+      await page.getByRole('heading', { name: '本轮交付与人工复核' }).waitFor();
+      step.deliveryPanel = true;
+      await page.getByRole('button', { name: '俯视', exact: true }).first().click();
+      await page.getByRole('button', { name: '透视', exact: true }).first().click();
+      step.views3D = true;
+      // 一次导出会连续下载 7 个文件：GLB、两个 Blender 脚本和 4 个 JSON。收集全部再逐个核对。
+      const exported = [];
+      const onDownload = d => exported.push(d);
+      page.on('download', onDownload);
+      await page.getByRole('button', { name: '导出 Blender / Pascal', exact: true }).click();
+      for (let i = 0; i < 60 && exported.length < 7; i++) await sleep(500);
+      const names = exported.map(d => d.suggestedFilename()).sort();
+      assert.equal(exported.length, 7, `expected 7 export files, got ${exported.length}: ${names.join(', ')}`);
+      for (const expected of ['.glb', 'fangwu3d-blender-cycles.py', 'fangwu3d-blender-batch.py', 'fangwu3d-pascal-editor.json', 'fangwu3d-material-library.json', 'fangwu3d-furniture-library.json', 'fangwu3d-blender-job.json']) {
+        assert.ok(names.some(n => n.endsWith(expected)), `missing export file ${expected}; got: ${names.join(', ')}`);
+      }
+      const glbFile = exported.find(d => d.suggestedFilename().endsWith('.glb'));
+      await glbFile.saveAs(path.join(outDir, `scene-${viewport.width}.glb`));
+      step.exportGLB = fs.statSync(path.join(outDir, `scene-${viewport.width}.glb`)).size;
+      assert.ok(step.exportGLB > 1000, 'GLB is not empty');
+      const glbHead = fs.readFileSync(path.join(outDir, `scene-${viewport.width}.glb`)).subarray(0, 4).toString('ascii');
+      assert.equal(glbHead, 'glTF', 'GLB magic header');
+      step.exportFiles = names.length;
+      for (const d of exported.filter(d => d.suggestedFilename().endsWith('.json'))) {
+        const file = path.join(outDir, `${viewport.width}-${d.suggestedFilename()}`);
+        await d.saveAs(file);
+        JSON.parse(fs.readFileSync(file, 'utf8'));
+      }
+      step.exportJsonValid = true;
+      page.off('download', onDownload);
+      const json = page.waitForEvent('download', { timeout: 20000 });
+      await page.getByRole('button', { name: '下载交付记录' }).click();
+      const jsonFile = await json;
+      await jsonFile.saveAs(path.join(outDir, `delivery-${viewport.width}.json`));
+      const delivery = JSON.parse(fs.readFileSync(path.join(outDir, `delivery-${viewport.width}.json`), 'utf8'));
+      assert.equal(delivery.readyForReview, true);
+      assert.doesNotMatch(JSON.stringify(delivery), /PRIVATE-/);
+      step.deliveryDownload = true;
+      await page.getByRole('button', { name: '重新质检当前成果' }).click();
+      await page.getByText('复检已提交').waitFor();
+      step.recheckNotice = true;
+      step.projectOverflow = await overflow();
+      await page.screenshot({ path: path.join(outDir, `project-${viewport.width}.png`), fullPage: true });
+
+      assert.equal(step.homeOverflow, false, `home horizontal overflow at ${viewport.width}`);
+      assert.equal(step.opcOverflow, false, `opc horizontal overflow at ${viewport.width}`);
+      assert.equal(step.projectOverflow, false, `project horizontal overflow at ${viewport.width}`);
+      assert.deepEqual(errors, [], 'no uncaught page errors');
+      step.pageErrors = errors.length;
+      report.push(step);
+      await context.close();
+    }
+  } finally {
+    await browser.close();
+  }
+  fs.writeFileSync(path.join(outDir, 'browser-acceptance.json'), JSON.stringify(report, null, 2));
+  console.log(JSON.stringify({ status: 'passed', fixture: 'synthetic, no model/payment calls', viewports: report.length, outDir, report }, null, 1));
+}
+
+run().catch(e => { console.error(e); process.exitCode = 1; }).finally(() => { if (server) server.kill(); });

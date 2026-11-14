@@ -117,3 +117,16 @@ export async function markConversationRead(id: number, actor: ChatActor, through
     return { ok: true };
   });
 }
+
+export async function exportConversation(id: number, actor: ChatActor) {
+  return (await getDb()).transaction(async tx => {
+    const row = await authorized(tx, id, actor);
+    const history = await tx.select({ id: messages.id, senderId: messages.senderId, text: messages.text, createdAt: messages.createdAt })
+      .from(messages).where(eq(messages.conversationId, id)).orderBy(asc(messages.id)).limit(10001);
+    if (history.length > 10000) return fail('会话超过一万条消息，暂不支持完整导出；请先使用历史分页查看', 409);
+    const c = await view(tx, row, actor);
+    return { schema: 'yushe.conversation.v1', exportedAt: now(), conversation: { id:row.id, orderId:row.orderId, projectName:c.projectName, homeowner:row.homeownerName, company:row.companyName },
+      messages: history.map(m=>({ id:m.id, sender:m.senderId===row.homeownerId?'homeowner':'company', text:m.text, createdAt:m.createdAt })),
+      note:'双方沟通记录，仅供本人保存与核对；导出不表示双方确认变更报价、合同或验收。分享范围由下载者决定。' };
+  });
+}

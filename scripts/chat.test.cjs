@@ -131,3 +131,15 @@ test('deleting an eligible project removes its conversation and messages', async
   await db.deleteProject(project.id);
   await assert.rejects(chat.readConversationMessages(c.id, actor(owner)), e => e.status === 404);
 });
+test('chat export is private, includes history and does not mark messages read', async () => {
+  assert.equal(typeof chat.exportConversation, 'function');
+  const { order } = await fixture(); const c = await chat.openOrderConversation(order.id, actor(owner));
+  await chat.sendConversationMessage(c.id, actor(owner), { text: '材料型号待核对', clientKey: 'export-message-1' });
+  const result = await chat.exportConversation(c.id, actor(company));
+  assert.equal(result.messages.length, 1);
+  assert.equal(result.messages[0].text, '材料型号待核对');
+  assert.doesNotMatch(JSON.stringify(result), /export-message-1|passwordHash|clientKey/);
+  assert.equal((await chat.listConversations(actor(company))).find(x => x.id === c.id).unreadCount, 1);
+  await assert.rejects(chat.exportConversation(c.id, actor(stranger)), e => e.status === 403);
+  await assert.rejects(chat.exportConversation(c.id, { uid: 0, role: 'boss' }), e => e.status === 403);
+});

@@ -14,6 +14,7 @@ export default function OpcPage() {
       </nav>
       <Link href="/dashboard" className="btn btn-primary">进入我的项目，查看真实交付 →</Link>
       <p><a href="/docs/opc-materials.md" download>下载商业模式、岗位说明与演示材料（Markdown）</a></p>
+      <p><Link href="/trials">记录试运行耗时、成本与验收结果 →</Link></p>
 
       <section id="business" aria-labelledby="business-title">
         <h2 id="business-title">商业模式画布</h2>

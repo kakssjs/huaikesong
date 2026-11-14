@@ -94,5 +94,15 @@ async function login(phone) {
   assert.equal(increment.conversation.partnerReadId, sent.id);
   await request(url + '/read', 403, stranger, 'POST', { throughId: reply.id });
   await request(url + '/read', 400, b, 'POST', { throughId: 999999 });
+  const exported = await request(url + '/export', 200, a);
+  assert.match(exported.headers.get('content-disposition'), /attachment/);
+  assert.match(exported.headers.get('cache-control'), /no-store/);
+  const transcript = await exported.json(); assert.equal(transcript.messages.length,2);
+  assert.doesNotMatch(JSON.stringify(transcript), /http-retry-message|clientKey|passwordHash/);
+  await request(url + '/export', 200, b);
+  await request(url + '/export', 403, stranger);
+  await request(url + '/export', 403, boss);
+  const trialPage = await (await request('/trials', 200)).text();
+  assert.ok(trialPage.includes('试运行效果记录'));
   console.log(JSON.stringify({ status: 'passed', requests, fixture: 'synthetic accounts and selected order; no AI/payment calls', evidenceDirectory: scratch }));
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => { child?.kill(); });

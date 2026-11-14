@@ -144,6 +144,30 @@ function overlapsAny(offset: number, width: number, list: WallOpening[]): boolea
 
 // ---------- ForgeFloor：清洗与校验 ----------
 
+/** 重叠面积超过较小房间的这个比例才提示。识别误差带来的 1% 到 4% 小重叠已由边吸附处理，不提示。 */
+const OVERLAP_WARN_RATIO = 0.15;
+
+/**
+ * 两个房间矩形大面积重叠时提示业主核对，不改几何。
+ * 客厅与餐厅这类连通的开放空间，识别模型可能拆出两个互相压住的矩形，也可能是真的识别错了，程序分辨不出，只能请业主确认。
+ */
+function overlapWarnings(rooms: RoomGeom[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < rooms.length; i++) {
+    for (let j = i + 1; j < rooms.length; j++) {
+      const a = rooms[i], b = rooms[j];
+      const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      const d = Math.min(a.y + a.d, b.y + b.d) - Math.max(a.y, b.y);
+      if (w <= EPS || d <= EPS) continue;
+      const ratio = (w * d) / Math.min(a.w * a.d, b.w * b.d);
+      if (ratio > OVERLAP_WARN_RATIO) {
+        out.push(`房间「${a.name}」与「${b.name}」重叠约 ${Math.round(ratio * 100)}%（占较小房间面积），若是连通的开放空间请核对分界，否则请在画板调整房间位置`);
+      }
+    }
+  }
+  return out;
+}
+
 function validate(plan: PlanGeometry): string[] {
   const w: string[] = [];
   const sumArea = plan.rooms.reduce((s, r) => s + r.w * r.d, 0);
@@ -159,6 +183,7 @@ function validate(plan: PlanGeometry): string[] {
   }
   const doorCount = plan.walls.reduce((s, wl) => s + wl.openings.filter(o => o.type === 'door').length, 0);
   if (doorCount < plan.rooms.length - 1) w.push('部分房间未生成门洞，请人工复核动线');
+  w.push(...overlapWarnings(plan.rooms));
   return w;
 }
 

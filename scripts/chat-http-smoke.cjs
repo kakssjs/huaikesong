@@ -43,8 +43,11 @@ async function login(phone) {
   const order = await db.createOrder({ projectId: p.id, homeownerId: owner.id });
   const p2 = await db.createProject({ homeownerId: owner.id, name: '未选定公司合成项目', style: '现代简约', budget: '15' });
   const openOrder = await db.createOrder({ projectId: p2.id, homeownerId: owner.id });
+  const p3 = await db.createProject({ homeownerId: owner.id, name: '聊天第二项目 合成资料', style: '现代简约', budget: '15' });
+  const secondOrder = await db.createOrder({ projectId: p3.id, homeownerId: owner.id });
   const storage = await db.getDb();
   await storage.update(db.orders).set({ companyId: company.id, status: 'matched' }).where(eq(db.orders.id, order.id));
+  await storage.update(db.orders).set({ companyId: company.id, status: 'matched' }).where(eq(db.orders.id, secondOrder.id));
   await storage.$client.close();
   const out = fs.openSync(path.join(scratch, 'server.log'), 'a');
   child = spawn(process.execPath, [path.join(root, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', '3316'], {
@@ -104,5 +107,7 @@ async function login(phone) {
   await request(url + '/export', 403, boss);
   const trialPage = await (await request('/trials', 200)).text();
   assert.ok(trialPage.includes('试运行效果记录'));
-  console.log(JSON.stringify({ status: 'passed', requests, fixture: 'synthetic accounts and selected order; no AI/payment calls', evidenceDirectory: scratch }));
+  let browserReport;
+  if (process.argv.includes('--browser')) browserReport = await require('./chat-browser-checks.cjs').run({ base, ownerCookie:a, companyCookie:b, ownerId:owner.id, companyId:company.id, conversationId:c.id, projectId:p.id, secondOrderId:secondOrder.id, outDir:path.join(scratch,'browser') });
+  console.log(JSON.stringify({ status: 'passed', requests, browserReport, fixture: 'synthetic accounts and selected order; no AI/payment calls', evidenceDirectory: scratch }));
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => { child?.kill(); });

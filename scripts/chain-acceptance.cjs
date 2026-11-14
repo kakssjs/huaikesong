@@ -245,7 +245,9 @@ async function browserChain(s, orderId) {
       step.bossApprovals = true;
       // 执行进度：任务记录里有四个环节的交接
       await bossTab('执行进度');
-      await page.getByRole('columnheader', { name: '交接' }).waitFor({ timeout: 20000 });
+      await page.screenshot({path:path.join(outDir,`boss-tasks-${viewport.width}.png`),fullPage:true});
+      fs.writeFileSync(path.join(outDir,`boss-tasks-${viewport.width}.txt`),await page.locator('body').innerText());
+      await page.locator('thead th').filter({ hasText: /^交接$/ }).waitFor({ timeout: 20000 });
       await page.getByText('调度器 → 户型识别').first().waitFor({ timeout: 20000 });
       await page.getByText('报价工期 → 质检').first().waitFor({ timeout: 20000 });
       assert.ok(await page.getByText('已完成').count() >= 4, 'four finished fixture tasks');

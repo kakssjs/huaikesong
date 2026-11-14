@@ -2,6 +2,13 @@
 // 新增界面文字时，在这里补上对应英文；没有收录的文字保持中文显示。
 import { WORKFLOW_EN } from './i18n-workflow';
 export const EN: Record<string, string> = {
+  '消息中心': 'Messages', '沟通装修细节': 'Discuss project details', '正在进入…': 'Opening…',
+  '项目沟通': 'Project conversations', '我的会话': 'My conversations', '发送消息': 'Send message',
+  '加载更早消息': 'Load earlier messages', '对方已读': 'Read',
+  '回到最新消息 ↓': 'Back to latest messages ↓', '返回项目订单': 'Back to project order',
+  '聊天不会自动变更报价、合同或验收结果；协商一致后，请在相应流程正式确认。': 'Chat does not change quotes, contracts or acceptance. Confirm agreed changes through the corresponding workflow.',
+  '承接关系已变更或订单已关闭，此会话仅可阅读。': 'The contractor has changed or the order is closed. This conversation is read-only.',
+  '业主与选定装修公司交流材料、工期和施工细节。': 'Homeowners and their selected contractor discuss materials, schedules and construction details.',
   '团队与服务': 'Team & service',
   '了解岗位、服务与交付标准 →': 'Explore roles, services and delivery standards →',
   '本轮交付与人工复核': 'Current delivery & human review',

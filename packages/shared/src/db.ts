@@ -144,6 +144,19 @@ export const bids = pgTable('bids', {
   createdAt: text('created_at').notNull(),
 });
 
+export const projectConversations = pgTable('project_conversations', {
+  id: serial('id').primaryKey(), orderId: integer('order_id').notNull(),
+  homeownerId: integer('homeowner_id').notNull(), companyId: integer('company_id').notNull(),
+  homeownerName: text('homeowner_name').notNull(), companyName: text('company_name').notNull(),
+  homeownerReadId: integer('homeowner_read_id').notNull().default(0), companyReadId: integer('company_read_id').notNull().default(0),
+  createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
+});
+export const conversationMessages = pgTable('conversation_messages', {
+  id: serial('id').primaryKey(), conversationId: integer('conversation_id').notNull(),
+  senderId: integer('sender_id').notNull(), text: text('text').notNull(), clientKey: text('client_key').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+
 export const commissionSettlements = pgTable('commission_settlements', {
   id: serial('id').primaryKey(),
   orderId: integer('order_id').notNull(),
@@ -275,6 +288,22 @@ CREATE TABLE IF NOT EXISTS bids (
   platform_commission_cny integer DEFAULT 0, net_profit_cny integer DEFAULT 0,
   commission_basis text DEFAULT 'gross_revenue', status text NOT NULL DEFAULT 'pending', created_at text NOT NULL
 );
+CREATE TABLE IF NOT EXISTS project_conversations (
+  id serial PRIMARY KEY, order_id integer NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  homeowner_id integer NOT NULL, company_id integer NOT NULL,
+  homeowner_name text NOT NULL, company_name text NOT NULL,
+  homeowner_read_id integer NOT NULL DEFAULT 0, company_read_id integer NOT NULL DEFAULT 0,
+  created_at text NOT NULL, updated_at text NOT NULL,
+  UNIQUE(order_id, company_id)
+);
+CREATE TABLE IF NOT EXISTS conversation_messages (
+  id serial PRIMARY KEY, conversation_id integer NOT NULL REFERENCES project_conversations(id) ON DELETE CASCADE,
+  sender_id integer NOT NULL, text text NOT NULL, client_key text NOT NULL, created_at text NOT NULL,
+  UNIQUE(conversation_id, sender_id, client_key)
+);
+CREATE INDEX IF NOT EXISTS conversation_messages_history ON conversation_messages(conversation_id, id);
+CREATE INDEX IF NOT EXISTS project_conversations_owner ON project_conversations(homeowner_id);
+CREATE INDEX IF NOT EXISTS project_conversations_company ON project_conversations(company_id);
 CREATE TABLE IF NOT EXISTS commission_settlements (
   id serial PRIMARY KEY, order_id integer NOT NULL, bid_id integer NOT NULL, company_id integer NOT NULL,
   company_name text NOT NULL, revenue_cny integer NOT NULL, estimated_cost_cny integer DEFAULT 0,

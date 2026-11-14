@@ -7,6 +7,7 @@ import { estimateContractServiceFee, type CommissionQuote } from "@i-renovation/
 import { explainFairBidding } from "@i-renovation/shared/fair-bidding";
 import { projectImage } from "@/lib/visuals";
 import ContractWorkbenchDialog from '../components/ContractWorkbenchDialog';
+import ProjectChatButton from '../components/ProjectChatButton';
 
 type PortalUser = {
   id: number;
@@ -759,6 +760,9 @@ export default function ContractorPortal() {
                         >
                           {projMeta(o.projectId)}
                         </p>
+                        {o.companyId === user.id && (
+                          <ProjectChatButton orderId={o.id} />
+                        )}
                         {o.companyId === user.id && (
                           <button
                             className="btn btn-ghost"

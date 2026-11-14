@@ -14,6 +14,8 @@ for (const name of fs.readdirSync(path.join(__dirname, '../packages/shared/src')
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yushe-workflow-'));
 process.env.IRENO_PGLITE_DIR = dataDir;
 process.env.RUNNER_ENABLED = 'false';
+// These tests exercise the demo signing and simulated-money path. New contracts are real unless the mode is set to demo.
+process.env.CONTRACT_MODE = 'demo';
 const db = require('./.workflow-regression/db.js');
 const domain = fs.existsSync(path.join(dir, 'workflow.js')) ? require('./.workflow-regression/workflow.js') : {};
 const service = fs.existsSync(path.join(dir, 'workflow-db.js')) ? require('./.workflow-regression/workflow-db.js') : {};

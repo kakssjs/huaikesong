@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import sharp from 'sharp';
 import { and, eq } from 'drizzle-orm';
 import { getDb, orders, projects, users, results, contracts, bids, contractWorkflows, workflowOperations, companyContractProfiles } from './db';
-import { initializeWorkflow, reduceWorkflow, workflowView, renderWorkflowHtml, assertWorkflowParty, validateCommand, validateParty, validateImageDataUrl,
+import { initializeWorkflow, getContractMode, isSignedStatus, reduceWorkflow, workflowView, renderWorkflowHtml, assertWorkflowParty, validateCommand, validateParty, validateImageDataUrl,
   textValue, defaultStagePlan, WorkflowError, type WorkflowActor, type WorkflowState, type WorkflowCommand, type ContractParty,
   type ContractTerms, type CompanyContractProfile, type WorkflowAttachment, type AIReview } from './workflow';
 
@@ -91,7 +91,7 @@ async function loadOrCreate(tx:Tx,id:number,actor:WorkflowActor):Promise<Workflo
       design:{...(design&&typeof design==='object'?design as Record<string,unknown>:{}),floorplan:result('floorplan'),plan:result('plan')},
     }};
   const [legacy]=await tx.select().from(contracts).where(eq(contracts.orderId,id));
-  const at=new Date().toISOString();const state=initializeWorkflow({orderId:id,projectId:project.id,homeownerId:owner.id,companyId:company.id,terms,...(legacy?{legacyContent:legacy.content}:{})},at);
+  const at=new Date().toISOString();const state=initializeWorkflow({orderId:id,projectId:project.id,homeownerId:owner.id,companyId:company.id,terms,...(legacy?{legacyContent:legacy.content}:{})},at,getContractMode(process.env.CONTRACT_MODE));
   await tx.insert(contractWorkflows).values({orderId:id,projectId:project.id,revision:0,state:state as never,updatedAt:at});return state;
 }
 export async function getOrderWorkflow(orderId:number,actor:WorkflowActor) {
@@ -133,7 +133,7 @@ async function apply(orderId:number,actor:WorkflowActor,cmd:WorkflowCommand,revi
         termsHash:digest(version.terms),signatureHash:typeof cmd.payload?.signatureDataUrl==='string'?digest(cmd.payload.signatureDataUrl):undefined,
         sealHash:appliedSealDataUrl?digest(appliedSealDataUrl):undefined,aiReview:review});
       const current=next.versions.at(-1)!;
-      if(current.status==='signed_demo'&&!current.finalFileHash)current.finalFileHash=createHash('sha256').update(renderWorkflowHtml(workflowView(next,actor))).digest('hex');
+      if(isSignedStatus(current.status)&&!current.finalFileHash)current.finalFileHash=createHash('sha256').update(renderWorkflowHtml(workflowView(next,actor))).digest('hex');
       const [saved]=await tx.update(contractWorkflows).set({revision:next.revision,state:next as never,updatedAt:at})
         .where(and(eq(contractWorkflows.orderId,orderId),eq(contractWorkflows.revision,cmd.expectedRevision))).returning({revision:contractWorkflows.revision});
       if(!saved)return error('版本已更新，请刷新后重试','STALE_REVISION',409);

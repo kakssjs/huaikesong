@@ -1,7 +1,12 @@
 /** Pure contract domain. All monetary values are integer fen; no database, filesystem or external calls. */
 export type WorkflowRole = 'homeowner' | 'company' | 'platform';
 export type WorkflowActor = { uid: number; role: 'homeowner' | 'company' | 'boss' };
-export type WorkflowStatus = 'awaiting_company' | 'awaiting_homeowner' | 'ready_to_freeze' | 'frozen' | 'partially_signed' | 'signed_demo' | 'superseded';
+/** 'signed_demo' is kept for contracts signed before real mode existed; 'signed' is a contract signed through a provider. */
+export type WorkflowStatus = 'awaiting_company' | 'awaiting_homeowner' | 'ready_to_freeze' | 'frozen' | 'partially_signed' | 'signed' | 'signed_demo' | 'superseded';
+/** A workflow is created in exactly one mode and never changes it. 'demo' is only reachable with CONTRACT_MODE=demo or on contracts that already exist. */
+export type ContractMode = 'real' | 'demo';
+export const getContractMode = (value: string | undefined): ContractMode => value === 'demo' ? 'demo' : 'real';
+export const isSignedStatus = (status: WorkflowStatus | string): boolean => status === 'signed' || status === 'signed_demo';
 export interface ContractParty { legalName: string; registrationId: string; representative: string; contact: string; address?: string }
 export interface WorkflowAttachment { id: string; name: string; kind: 'reference' | 'plan' | 'quote' | 'material'; dataUrl?: string; url?: string; note?: string }
 export interface StagePlan { id: string; name: string; amountCents: number; acceptanceCriteria: string; plannedDate?: string }
@@ -12,10 +17,19 @@ export interface ContractTerms {
   source: { project: unknown; quote: unknown; design: unknown };
 }
 export interface CompanyContractProfile { party: ContractParty; authorizedSignerName: string; sealDataUrl?: string; updatedAt: string; mode: 'demo' }
+/** What a signing provider returns once a party has signed. Generic on purpose: no field belongs to one vendor. */
+export interface SigningReceipt {
+  provider: string; externalId: string; receiptId: string; signerVerified: boolean; signedAt: string; evidenceHash: string; certificateFingerprint?: string;
+}
+/** What a payment provider returns for one money movement. */
+export interface PaymentReceipt {
+  provider: string; externalId: string; receiptId: string; status: 'pending' | 'succeeded' | 'failed'; amountCents: number; confirmedAt?: string; reconciled: boolean;
+}
 export interface WorkflowSignature {
-  role: WorkflowRole; actorId: number; at: string; mode: 'demo'; signerName: string; signatureDataUrl: string;
+  role: WorkflowRole; actorId: number; at: string; mode: ContractMode; signerName: string; signatureDataUrl?: string;
   sealDataUrl?: string; termsHash: string; assetVersion?: string; signatureHash?: string; sealHash?: string;
   sealBinding?: { contractId: string; version: number; mode: 'demo' };
+  evidence?: SigningReceipt;
 }
 export interface ContractVersion {
   number: number; contractId: string; terms: ContractTerms; status: WorkflowStatus;
@@ -24,12 +38,12 @@ export interface ContractVersion {
 }
 export interface StageAttempt { submittedAt: string; evidence: WorkflowAttachment[]; note: string; review?: 'accepted' | 'rejected'; reviewAt?: string; reason?: string }
 export interface StageProgress { stageId: string; status: 'pending' | 'submitted' | 'rejected' | 'accepted' | 'settled' | 'cancelled'; attempts: StageAttempt[]; acceptedAt?: string; settledAt?: string; cancelledAt?: string; cancellationDisputeId?: string }
-export interface WorkflowTransaction { id: string; requestKey: string; type: 'fund' | 'release' | 'refund'; amountCents: number; feeCents: number; netCents: number; stageId?: string; reason?: string; at: string; mode: 'demo' }
+export interface WorkflowTransaction { id: string; requestKey: string; type: 'fund' | 'release' | 'refund'; amountCents: number; feeCents: number; netCents: number; stageId?: string; reason?: string; at: string; mode: ContractMode; receipt?: PaymentReceipt }
 export interface WorkflowDispute { id: string; stageId: string; reason: string; evidence: WorkflowAttachment[]; status: 'open' | 'resolved'; createdAt: string; resolution?: { independentParty: string; basis: string; outcome: string; disposition: 'continue' | 'cancel_stage'; at: string } }
-export interface WorkflowEvent { id: string; action: string; actorId: number; role: WorkflowRole; version: number; at: string; mode: 'demo'; note?: string }
+export interface WorkflowEvent { id: string; action: string; actorId: number; role: WorkflowRole; version: number; at: string; mode: ContractMode; note?: string }
 export interface AIReview { status: 'not_called' | 'succeeded' | 'failed'; mode: 'rules' | 'model'; summary?: string; issues?: string[]; at?: string; error?: string; tokensUsed?: number }
 export interface WorkflowState {
-  mode: 'demo'; id: string; orderId: number; projectId: number; homeownerId: number; companyId: number;
+  mode: ContractMode; id: string; orderId: number; projectId: number; homeownerId: number; companyId: number;
   revision: number; currentVersion: number; versions: ContractVersion[]; stages: StageProgress[];
   transactions: WorkflowTransaction[]; disputes: WorkflowDispute[]; events: WorkflowEvent[];
   legacyContract: boolean; legacyContent?: string; aiReview: AIReview;
@@ -39,8 +53,9 @@ export interface WorkflowView extends WorkflowState {
   refundedCents: number; realizedFeeCents: number; validation: { missing: string[]; errors: string[]; warnings: string[] };
   draftText: string; todos: string[]; allowedActions: string[];
 }
-export type WorkflowAction = 'revise' | 'negotiate' | 'company_confirm' | 'homeowner_accept' | 'generate_draft' | 'freeze' | 'sign_demo'
-  | 'submit_stage' | 'accept_stage' | 'reject_stage' | 'simulate_fund' | 'simulate_release' | 'simulate_refund' | 'open_dispute' | 'resolve_dispute' | 'ai_review';
+export type WorkflowAction = 'revise' | 'negotiate' | 'company_confirm' | 'homeowner_accept' | 'generate_draft' | 'freeze' | 'sign_demo' | 'sign'
+  | 'submit_stage' | 'accept_stage' | 'reject_stage' | 'simulate_fund' | 'simulate_release' | 'simulate_refund' | 'fund' | 'release' | 'refund'
+  | 'open_dispute' | 'resolve_dispute' | 'ai_review';
 export interface WorkflowCommand { action: WorkflowAction; expectedRevision: number; requestKey: string; payload?: Record<string, unknown> }
 export class WorkflowError extends Error { constructor(message: string, public code = 'INVALID_INPUT', public status = 400) { super(message); this.name = 'WorkflowError'; } }
 const fail = (message: string, code = 'INVALID_INPUT', status = 400): never => { throw new WorkflowError(message, code, status); };
@@ -128,8 +143,8 @@ export function validateContractTerms(t: ContractTerms) {
   if(!t.attachments.length)warnings.push('尚未附加参考图或图纸，请在签署前人工复核。');
   return {missing,errors,warnings};
 }
-export function initializeWorkflow(seed: {orderId:number;projectId:number;homeownerId:number;companyId:number;terms:ContractTerms;legacyContent?:string}, at=new Date().toISOString()): WorkflowState {
-  return {mode:'demo',id:`workflow-${seed.orderId}`,orderId:seed.orderId,projectId:seed.projectId,homeownerId:seed.homeownerId,companyId:seed.companyId,revision:0,currentVersion:1,
+export function initializeWorkflow(seed: {orderId:number;projectId:number;homeownerId:number;companyId:number;terms:ContractTerms;legacyContent?:string}, at=new Date().toISOString(), mode:ContractMode='real'): WorkflowState {
+  return {mode,id:`workflow-${seed.orderId}`,orderId:seed.orderId,projectId:seed.projectId,homeownerId:seed.homeownerId,companyId:seed.companyId,revision:0,currentVersion:1,
     versions:[{number:1,contractId:`contract-${seed.orderId}`,terms:structuredClone(seed.terms),status:'awaiting_company',confirmations:{},signatures:[],createdAt:at}],
     stages:seed.terms.stages.map(s=>({stageId:s.id,status:'pending',attempts:[]})),transactions:[],disputes:[],events:[],legacyContract:seed.legacyContent!==undefined,
     ...(seed.legacyContent===undefined?{}:{legacyContent:seed.legacyContent}),aiReview:{status:'not_called',mode:'rules',summary:'规则草案，模型未调用'}};
@@ -146,27 +161,50 @@ export function ledgerTotals(s:WorkflowState) {
 }
 const ROLE_ACTIONS:Record<WorkflowAction,WorkflowRole[]>={
   revise:['homeowner','company','platform'],negotiate:['homeowner'],company_confirm:['company'],homeowner_accept:['homeowner'],generate_draft:['homeowner','company','platform'],
-  freeze:['homeowner','company','platform'],sign_demo:['homeowner','company','platform'],submit_stage:['company'],accept_stage:['homeowner'],reject_stage:['homeowner'],
-  simulate_fund:['homeowner'],simulate_release:['homeowner'],simulate_refund:['homeowner'],open_dispute:['homeowner','company'],resolve_dispute:['platform'],ai_review:['homeowner','company','platform'],
+  freeze:['homeowner','company','platform'],sign_demo:['homeowner','company','platform'],sign:['homeowner','company','platform'],submit_stage:['company'],accept_stage:['homeowner'],reject_stage:['homeowner'],
+  simulate_fund:['homeowner'],simulate_release:['homeowner'],simulate_refund:['homeowner'],fund:['homeowner'],release:['homeowner'],refund:['homeowner'],
+  open_dispute:['homeowner','company'],resolve_dispute:['platform'],ai_review:['homeowner','company','platform'],
 };
+/** Actions that only make sense in one mode. A workflow never accepts the other mode's actions, so demo money can never pass for real money. */
+const DEMO_ONLY:WorkflowAction[]=['sign_demo','simulate_fund','simulate_release','simulate_refund'];
+const REAL_ONLY:WorkflowAction[]=['sign','fund','release','refund'];
 export function validateCommand(cmd:WorkflowCommand) {
   if(!cmd||!Object.hasOwn(ROLE_ACTIONS,cmd.action)||!Number.isSafeInteger(cmd.expectedRevision)||cmd.expectedRevision<0||typeof cmd.requestKey!=='string'||!/^[A-Za-z0-9_.:-]{8,120}$/.test(cmd.requestKey))return fail('操作、版本或幂等请求键无效');
   if(cmd.payload!==undefined&&(!cmd.payload||typeof cmd.payload!=='object'||Array.isArray(cmd.payload)))return fail('payload必须是对象');
 }
-export function reduceWorkflow(state:WorkflowState,actor:WorkflowActor,cmd:WorkflowCommand,context:{at:string;termsHash?:string;profile?:CompanyContractProfile|null;signatureHash?:string;appliedSignatureDataUrl?:string;appliedSealDataUrl?:string;sealHash?:string;aiReview?:AIReview}):WorkflowState {
+export interface ReduceContext {
+  at:string;termsHash?:string;profile?:CompanyContractProfile|null;signatureHash?:string;appliedSignatureDataUrl?:string;appliedSealDataUrl?:string;sealHash?:string;aiReview?:AIReview;
+  /** Receipt a signing provider returned for this very command. Present only when the server really called the provider. */
+  signing?:SigningReceipt;
+  /** Receipt a payment provider returned for this very command. */
+  payment?:PaymentReceipt;
+}
+export function reduceWorkflow(state:WorkflowState,actor:WorkflowActor,cmd:WorkflowCommand,context:ReduceContext):WorkflowState {
   validateCommand(cmd);assertWorkflowParty(state,actor);
   if(state.legacyContract)return fail('历史合同只读保留，请通过正式补充协议办理变更','LEGACY_READ_ONLY',409);
   if(state.revision!==cmd.expectedRevision)return fail('版本已更新，请刷新后重试','STALE_REVISION',409);
   const role=workflowRole(actor), action=cmd.action,p=cmd.payload??{},at=context.at;
   if(!ROLE_ACTIONS[action].includes(role))return fail('无权执行此操作，验收仅限业主本人','FORBIDDEN',403);
+  const mode=state.mode;
+  if(mode==='real'&&DEMO_ONLY.includes(action))return fail('本合同为真实合同，不接受演示签署或模拟资金操作','MODE_MISMATCH',409);
+  if(mode==='demo'&&REAL_ONLY.includes(action))return fail('本合同为演示合同，不接受真实签署或真实资金操作','MODE_MISMATCH',409);
   const s=structuredClone(state),v=s.versions.at(-1)!, t=v.terms;
-  const requireSigned=()=>{if(v.status!=='signed_demo')return fail('请先完成三方演示签署','INVALID_STATE',409);};
+  const requireSigned=()=>{if(!isSignedStatus(v.status))return fail(mode==='demo'?'请先完成三方演示签署':'请先完成三方签署','INVALID_STATE',409);};
   const stage=()=>{const id=textValue(p.stageId,'阶段编号',true,100),plan=t.stages.find(x=>x.id===id),progress=s.stages.find(x=>x.stageId===id);if(!plan||!progress)return fail('阶段不存在');return {plan,progress};};
   const hasDispute=(id?:string)=>s.disputes.some(d=>d.status==='open'&&(!id||d.stageId===id));
   const amount=()=>positiveCents(p.amountCents);
-  const addTransaction=(type:WorkflowTransaction['type'],amountCents:number,feeCents=0,stageId?:string)=>s.transactions.push({id:`tx-${s.orderId}-${s.revision+1}`,requestKey:cmd.requestKey,type,amountCents,feeCents,netCents:type==='release'?amountCents-feeCents:amountCents,stageId,at,mode:'demo'});
+  const addTransaction=(type:WorkflowTransaction['type'],amountCents:number,feeCents=0,stageId?:string,receipt?:PaymentReceipt)=>s.transactions.push({id:`tx-${s.orderId}-${s.revision+1}`,requestKey:cmd.requestKey,type,amountCents,feeCents,netCents:type==='release'?amountCents-feeCents:amountCents,stageId,at,mode,...(receipt?{receipt}:{})});
+  /** A real money movement is recorded only against a succeeded provider receipt for exactly this amount, and a receipt is never reused. */
+  const requireReceipt=(expected:number):PaymentReceipt=>{
+    const r=context.payment;
+    if(!r)return fail('尚未配置资金服务商或未取得服务商回执，不能记录真实资金变动','PROVIDER_NOT_CONFIGURED',503);
+    if(r.status!=='succeeded')return fail(`服务商回执状态为${r.status==='pending'?'待确认':'未成功'}，不能记录入账或出款`,'RECEIPT_NOT_SUCCEEDED',409);
+    if(r.amountCents!==expected)return fail('服务商回执金额与本次操作金额不一致','RECEIPT_AMOUNT_MISMATCH',409);
+    if(s.transactions.some(x=>x.receipt&&x.receipt.provider===r.provider&&x.receipt.receiptId===r.receiptId))return fail('该服务商回执已使用过，不能重复入账','RECEIPT_REUSED',409);
+    return r;
+  };
   if(action==='revise'||action==='negotiate') {
-    if(v.status==='signed_demo')return fail('已签合同正文只读，变更须通过补充协议','SIGNED_READ_ONLY',409);
+    if(isSignedStatus(v.status))return fail('已签合同正文只读，变更须通过补充协议','SIGNED_READ_ONLY',409);
     if(s.versions.length>=100)return fail('版本数量已达上限，请归档后联系平台');
     let patch:Record<string,unknown>;
     if(action==='negotiate') {textValue(p.note,'议价说明');patch={totalCents:positiveCents(p.totalCents)};}
@@ -217,6 +255,22 @@ export function reduceWorkflow(state:WorkflowState,actor:WorkflowActor,cmd:Workf
     v.signatures.push({role,actorId:actor.uid,at,mode:'demo',signerName,signatureDataUrl,termsHash:v.termsHash,
       ...(sealDataUrl?{sealDataUrl,assetVersion,sealHash:context.sealHash,sealBinding:{contractId:v.contractId,version:v.number,mode:'demo' as const}}:{}),signatureHash:context.signatureHash});
     v.status=v.signatures.length===3?'signed_demo':'partially_signed';
+  } else if(action==='sign') {
+    if(!['frozen','partially_signed'].includes(v.status)||!v.termsHash)return fail('请签署当前冻结版本','INVALID_STATE',409);
+    if(v.signatures.some(x=>x.role===role))return fail('本方已完成此版本签署，不能重复签署','INVALID_STATE',409);
+    const signerName=textValue(p.signerName,'签署人姓名',true,200);
+    const r=context.signing;
+    if(!r)return fail('尚未配置电子签署服务商或未取得签署回执，不能记录真实签署','PROVIDER_NOT_CONFIGURED',503);
+    if(!r.signerVerified)return fail('服务商未完成签署人实名或主体核验，签署无效','SIGNER_NOT_VERIFIED',409);
+    for(const [name,value] of [['服务商',r.provider],['外部单号',r.externalId],['回执号',r.receiptId]] as const)if(typeof value!=='string'||!value.trim())return fail(`签署回执缺少${name}`,'INVALID_RECEIPT',409);
+    if(!/^[0-9a-f]{64}$/i.test(r.evidenceHash))return fail('签署回执的证据摘要无效','INVALID_RECEIPT',409);
+    if(v.signatures.some(x=>x.evidence&&x.evidence.provider===r.provider&&x.evidence.receiptId===r.receiptId))return fail('该签署回执已被使用','RECEIPT_REUSED',409);
+    if(role==='company'){
+      if(!context.profile)return fail('请先保存本公司的签约主体资料');
+      if(JSON.stringify(t.company)!==JSON.stringify(context.profile.party))return fail('公司资料已变化，请修订合同后重新确认','INVALID_STATE',409);
+    }
+    v.signatures.push({role,actorId:actor.uid,at,mode:'real',signerName,termsHash:v.termsHash,evidence:{...r}});
+    v.status=v.signatures.length===3?'signed':'partially_signed';
   } else if(action==='submit_stage') {
     requireSigned();const {progress}=stage();if(!['pending','rejected'].includes(progress.status))return fail('此阶段不接受重复提交','INVALID_STATE',409);
     progress.attempts.push({submittedAt:at,evidence:validateAttachments(p.evidence,true),note:textValue(p.note,'施工说明',true,2000)});progress.status='submitted';
@@ -242,6 +296,24 @@ export function reduceWorkflow(state:WorkflowState,actor:WorkflowActor,cmd:Workf
     const reserved=t.stages.filter(plan=>s.stages.some(progress=>progress.stageId===plan.id&&progress.status==='accepted')).reduce((sum,plan)=>sum+plan.amountCents,0);
     if(value>Math.max(0,balance-reserved))return fail('须保留已验收但未结算阶段的资金，不允许单方退款取走','ACCEPTED_FUNDS_RESERVED',409);
     addTransaction('refund',value);s.transactions.at(-1)!.reason=textValue(p.reason,'退款理由');
+  } else if(action==='fund') {
+    requireSigned();const value=amount(),totals=ledgerTotals(s);
+    if(totals.fundedCents-totals.refundedCents+value>t.totalCents)return fail('入金不得超过合同总价');
+    addTransaction('fund',value,0,undefined,requireReceipt(value));
+  } else if(action==='release') {
+    requireSigned();const {plan,progress}=stage();if(progress.status!=='accepted')return fail('此阶段须由业主验收通过，或已结算','INVALID_STATE',409);
+    if(hasDispute(plan.id))return fail('该阶段存在未解决争议，未结算金额已冻结','DISPUTE_FROZEN',409);
+    const totals=ledgerTotals(s);if(totals.balanceCents<plan.amountCents)return fail('可结算资金余额不足','INSUFFICIENT_FUNDS',409);
+    const receipt=requireReceipt(plan.amountCents);
+    const fee=Math.round((totals.releasedCents+plan.amountCents)*t.feeBps/10000)-totals.realizedFeeCents;
+    addTransaction('release',plan.amountCents,fee,plan.id,receipt);progress.status='settled';progress.settledAt=at;
+  } else if(action==='refund') {
+    requireSigned();const reason=textValue(p.reason,'退款理由');if(hasDispute())return fail('存在未解决争议，禁止单方退款','DISPUTE_FROZEN',409);
+    const value=amount(),balance=ledgerTotals(s).balanceCents;
+    if(value>balance)return fail('退款超出未结算资金余额；已结算款须另行返还','INSUFFICIENT_FUNDS',409);
+    const reserved=t.stages.filter(plan=>s.stages.some(progress=>progress.stageId===plan.id&&progress.status==='accepted')).reduce((sum,plan)=>sum+plan.amountCents,0);
+    if(value>Math.max(0,balance-reserved))return fail('须保留已验收但未结算阶段的资金，不允许单方退款取走','ACCEPTED_FUNDS_RESERVED',409);
+    addTransaction('refund',value,0,undefined,requireReceipt(value));s.transactions.at(-1)!.reason=reason;
   } else if(action==='open_dispute') {
     requireSigned();const {plan}=stage();if(hasDispute(plan.id))return fail('该阶段已有未解决争议','INVALID_STATE',409);
     s.disputes.push({id:`dispute-${s.orderId}-${s.revision+1}`,stageId:plan.id,reason:textValue(p.reason,'争议说明'),evidence:validateAttachments(p.evidence??[]),status:'open',createdAt:at});
@@ -258,7 +330,7 @@ export function reduceWorkflow(state:WorkflowState,actor:WorkflowActor,cmd:Workf
   } else if(action==='ai_review') {
     if(!context.aiReview)return fail('规则草案，模型未调用；模型复核入口尚未配置','MODEL_NOT_CONFIGURED',409);s.aiReview=context.aiReview;
   }
-  s.revision+=1;s.events.push({id:`event-${s.orderId}-${s.revision}`,action,actorId:actor.uid,role,version:s.currentVersion,at,mode:'demo',...(typeof p.note==='string'?{note:p.note.slice(0,2000)}:{})});
+  s.revision+=1;s.events.push({id:`event-${s.orderId}-${s.revision}`,action,actorId:actor.uid,role,version:s.currentVersion,at,mode,...(typeof p.note==='string'?{note:p.note.slice(0,2000)}:{})});
   return s;
 }
 /** Human-readable excerpts from frozen upstream data. They are plain text and never interpreted as HTML or instructions. */
@@ -293,35 +365,40 @@ function upstreamSnapshotText(t:ContractTerms):string {
   };walk(t.source.design,'',0);
   return `${quoteLines.join('\n').slice(0,6000)}\n上游设计说明快照：\n${designLines.join('\n')||'未提供可读取的设计正文，请人工核对方案附件。'}${omitted?'\n设计内容超出摘要上限，已截取；完整冻结数据另存本合同版本。':''}`;
 }
-export function generateContractDraft(v:ContractVersion):string {
+export function generateContractDraft(v:ContractVersion,mode:ContractMode='demo'):string {
   const t=v.terms,money=(n:number)=>(n/100).toFixed(2);
-  return ['予舍三方装修合同 · 演示规则草案（需人工复核）',`合同编号：${v.contractId}　版本：${v.number}`,
+  return [mode==='real'?'予舍三方装修合同 · 规则草案（需人工复核）':'予舍三方装修合同 · 演示规则草案（需人工复核）',`合同编号：${v.contractId}　版本：${v.number}`,
     `甲方（业主）：${t.homeowner.legalName||'待补充'}；乙方（施工企业）：${t.company.legalName||'待补充'}；丙方（平台）：${t.platform.legalName||'待补充'}`,
     `项目：${t.projectName}；施工地点：${t.location||'待补充'}`,
     `面积：${t.area}㎡（${t.areaBasis||'计量口径待确认'}）；风格：${t.style}；范围：${t.scope||'待补充'}`,
     `合同总价：${money(t.totalCents)}元；参考均价：${t.area>0?money(Math.round(t.totalCents/t.area)):'待确认'}元/㎡（仅为总价除以面积的参考，不重复计价）。`,
     `工期：${t.durationDays}天。具体开竣工日期、材料品牌规格、排除项、变更、保修和违约条款须由各方另行复核确认。`,
-    `平台履约服务费由乙方承担，按每次成功模拟阶段结算金额的${t.feeBps/100}%计收；累计费用分位舍入，签署、入金和验收不计收入。`,
+    `平台履约服务费由乙方承担，按每次成功${mode==='real'?'':'模拟'}阶段结算金额的${t.feeBps/100}%计收；累计费用分位舍入，签署、入金和验收不计收入。`,
     ...t.stages.map((s,i)=>`第${i+1}期：${s.name}，${money(s.amountCents)}元；验收标准：${s.acceptanceCriteria}；计划日期：${s.plannedDate||'待约定'}。`),
     '施工方提交证据，业主明确验收通过后，仍须检查资金余额和争议状态。平台不代替业主验收，不作为独立仲裁机构。',
     '争议按双方约定提交独立处理方，保留证据和处理依据。已结算交易不得抹除，退款另记交易。',
     '附件清单：',...t.attachments.map(a=>`${a.name}（${a.dataUrl?'版本内图片快照':'外部参考链接，未冻结远程内容'}）${a.note||''}`),
     upstreamSnapshotText(t),
-    '本文件为产品演示，签名、公章图片仅记录本方演示确认，不承诺正式法律效力；模拟余额不代表第三方真实托管或真实到账。'].join('\n');
+    mode==='real'
+      ? '本合同由各方通过电子签署服务商完成签署，签署回执、证据摘要与条款校验值记录在合同履约记录中；资金入账、拨付与退款均以资金服务商的成功回执为准。条款内容、条款效力及适用法律须由各方自行复核，必要时咨询律师。'
+      : '本文件为产品演示，签名、公章图片仅记录本方演示确认，不承诺正式法律效力；模拟余额不代表第三方真实托管或真实到账。'].join('\n');
 }
 export function workflowView(state:WorkflowState,actor:WorkflowActor):WorkflowView {
   assertWorkflowParty(state,actor);const current=state.versions.at(-1)!,status=current.status,role=workflowRole(actor);
   let allowedActions=(Object.keys(ROLE_ACTIONS)as WorkflowAction[]).filter(a=>ROLE_ACTIONS[a].includes(role));
   allowedActions=allowedActions.filter(a=>{
     if(state.legacyContract)return false;
-    if(a==='revise'||a==='negotiate')return status!=='signed_demo';
+    if(DEMO_ONLY.includes(a)&&state.mode!=='demo')return false;
+    if(REAL_ONLY.includes(a)&&state.mode!=='real')return false;
+    if(a==='revise'||a==='negotiate')return !isSignedStatus(status);
     if(a==='company_confirm')return status==='awaiting_company';if(a==='homeowner_accept')return status==='awaiting_homeowner';
-    if(a==='freeze')return status==='ready_to_freeze';if(a==='sign_demo')return ['frozen','partially_signed'].includes(status)&&!current.signatures.some(x=>x.role===role);
-    if(['generate_draft','ai_review'].includes(a))return true;return status==='signed_demo';
+    if(a==='freeze')return status==='ready_to_freeze';if(a==='sign_demo'||a==='sign')return ['frozen','partially_signed'].includes(status)&&!current.signatures.some(x=>x.role===role);
+    if(['generate_draft','ai_review'].includes(a))return true;return isSignedStatus(status);
   });
   const validation=validateContractTerms(current.terms);
-  const todos=state.legacyContract?['历史合同只读保留']:status==='awaiting_company'?['施工企业确认当前报价、范围与工期']:status==='awaiting_homeowner'?['业主接受当前版本或提出议价']:status==='ready_to_freeze'?['补齐资料并冻结签署版本']:['frozen','partially_signed'].includes(status)?['业主','施工企业','平台'].filter((_,i)=>!current.signatures.some(x=>x.role===(['homeowner','company','platform']as const)[i])).map(x=>`${x}完成本方演示签署`):['按合同阶段提交资料，由业主验收并申请模拟结算'];
-  return {...structuredClone(state),current:structuredClone(current),status,...ledgerTotals(state),validation,draftText:state.legacyContent??generateContractDraft(current),todos,allowedActions};
+  const signWord=state.mode==='demo'?'演示签署':'电子签署',settleWord=state.mode==='demo'?'申请模拟结算':'申请结算';
+  const todos=state.legacyContract?['历史合同只读保留']:status==='awaiting_company'?['施工企业确认当前报价、范围与工期']:status==='awaiting_homeowner'?['业主接受当前版本或提出议价']:status==='ready_to_freeze'?['补齐资料并冻结签署版本']:['frozen','partially_signed'].includes(status)?['业主','施工企业','平台'].filter((_,i)=>!current.signatures.some(x=>x.role===(['homeowner','company','platform']as const)[i])).map(x=>`${x}完成本方${signWord}`):[`按合同阶段提交资料，由业主验收并${settleWord}`];
+  return {...structuredClone(state),current:structuredClone(current),status,...ledgerTotals(state),validation,draftText:state.legacyContent??generateContractDraft(current,state.mode),todos,allowedActions};
 }
 export const escapeHtml=(v:unknown)=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 export function renderWorkflowHtml(view:WorkflowView):string {

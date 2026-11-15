@@ -122,9 +122,9 @@ async function run() {
 
       // 团队与服务页：四个锚点标题与材料下载链接
       await page.goto(base + '/opc', { waitUntil: 'networkidle' });
-      for (const title of ['商业模式画布', '岗位说明书', '交付与验收']) await page.getByRole('heading', { name: title }).first().waitFor();
+      for (const title of ['团队与服务', '我们能帮你做什么', '认识我们的团队']) await page.getByRole('heading', { name: title, exact: true }).waitFor();
       step.opcHeadings = true;
-      assert.ok(await page.locator('a[href="/docs/opc-materials.md"]').count() > 0, 'materials download link');
+      assert.equal(await page.locator('a[href="/docs/opc-materials.md"],a[href="/trials"]').count(), 0, 'service introduction has no internal material links');
       step.opcOverflow = await overflow();
       await page.screenshot({ path: path.join(outDir, `opc-${viewport.width}.png`), fullPage: true });
 

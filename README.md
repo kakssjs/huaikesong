@@ -1,6 +1,6 @@
-# I Renovation · Monorepo
+# 予舍 · AI 装修智能体协作平台
 
-予舍 AI 装修设计与履约协同平台。
+予舍是一个 AI 装修智能体团队：调度、户型识别、设计与同源 3D、报价工期、质检和装修队匹配协作推进交付，业主与装修队在线沟通、签约和履约。
 
 ## 一体化项目工作台（2026-11-15）
 
@@ -24,7 +24,7 @@
 
 最新验证（2026-11-15）：**142 项自动测试（含新增合同服务层测试）、类型检查、Web/Worker 构建通过；主链与任务恢复 32 项、注册与交付 40 次、聊天 34 次、演示合同 71 次、服务商合同 32 项隔离检查通过**。本轮修复登录后页面不更新、匹配评分金额单位错误及两处投标报价单位遗漏。完整范围与限制见 [验收记录](docs/最新仓库验收记录.md)。这些检查使用合成数据与测试服务商，不证明真实模型或真实签署资金服务已验收。
 
-本轮代码与开发文档同批同步，旧 V3 源码包不含新增内容。新版本地预览为 `http://127.0.0.1:3303/opc`（仅本机）；真实模型预演（仅 1 张真实户型图）、合同签署后环节的浏览器验收、严格并发版本一致性与新压缩包仍待完成，不代表已完成最终赛场验收。
+本轮代码与开发文档同批同步。真实模型预演（仅 1 张真实户型图）、合同签署后环节的浏览器验收、严格并发版本一致性与新压缩包仍待完成，不代表已完成最终赛场验收。
 
 ## 业主与装修公司沟通
 
@@ -88,7 +88,7 @@ NODE_ENV=production npm run start -w apps/web -- -H 127.0.0.1 -p 3200
 
 线上由 systemd 管理，前端需要 HTTPS 才能使用安全登录 Cookie。`IRENO_PGLITE_DIR` 和 `IRENO_UPLOAD_DIR` 应指向绝对路径并备份；不要在多个服务进程中打开同一个 PGlite 目录。大模型（默认 DeepSeek，由 `LLM_API_KEY` 等环境变量配置）负责识别，Agnes 负责图像，支付凭证只给服务端读取。邮箱未启用时手机号密码登录仍可使用。
 
-`npm test` 使用临时数据库并在结束后清理。`scripts/acceptance.mjs`、`scripts/media-acceptance.mjs` 和 `scripts/browser-acceptance.cjs` 是本次隔离验收工具，不能直接对生产数据运行。`browser-acceptance.cjs` 自带隔离数据库和服务：`npm run build` 后运行 `node scripts/browser-acceptance.cjs --isolated-demo`，可用 `PLAYWRIGHT_CORE_PATH`、`CHROME_PATH`、`BROWSER_ACCEPTANCE_OUT` 指定 Playwright、Chrome 和输出目录；`acceptance.mjs` 与 `media-acceptance.mjs` 仍引用旧部署路径，不能直接使用。`scripts/chain-acceptance.cjs` 同样自带隔离环境，用合成账号走“确认、发布、公司准入、投标、匹配、选定、合同工作台”这条主链并检查公司端、老板端、业主端页面：`npm run build` 后运行 `node scripts/chain-acceptance.cjs --isolated-demo`（端口 3323，可用 `CHAIN_ACCEPTANCE_OUT` 指定输出目录）。正向企业会员测试的模拟权益仅由验收服务通过 `node --require scripts/test-payments.cjs` 预加载，它只把支付服务的权益查询换成固定结果；生产服务禁止加载它。
+`npm test` 使用临时数据库并在结束后清理。`scripts/acceptance.mjs`、`scripts/media-acceptance.mjs` 和 `scripts/browser-acceptance.cjs` 是本次隔离验收工具，不能直接对生产数据运行。`browser-acceptance.cjs` 自带隔离数据库和服务：`npm run build` 后运行 `node scripts/browser-acceptance.cjs --isolated-demo`，可用 `PLAYWRIGHT_CORE_PATH`、`CHROME_PATH`、`BROWSER_ACCEPTANCE_OUT` 指定 Playwright、Chrome 和输出目录；`acceptance.mjs` 与 `media-acceptance.mjs` 写死了服务器上的 `/opt/irenovation-remediation` 目录，换环境前需先改路径。`scripts/chain-acceptance.cjs` 同样自带隔离环境，用合成账号走“确认、发布、公司准入、投标、匹配、选定、合同工作台”这条主链并检查公司端、老板端、业主端页面：`npm run build` 后运行 `node scripts/chain-acceptance.cjs --isolated-demo`（端口 3323，可用 `CHAIN_ACCEPTANCE_OUT` 指定输出目录）。正向企业会员测试的模拟权益仅由验收服务通过 `node --require scripts/test-payments.cjs` 预加载，它只把支付服务的权益查询换成固定结果；生产服务禁止加载它。
 
 ## 已实现
 

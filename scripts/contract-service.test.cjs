@@ -45,6 +45,63 @@ test('membership retries preserve purchase identity and isolate copied legacy re
   assert.equal(rows.find(x => x.id === first.id).status, 'entitlement_confirmed');
 });
 
+test('payment refunds follow the provider: only PAID can be refunded, the platform decision is recorded, and only REFUNDED closes it', async () => {
+  const company = await db.createUser({ role: 'company', name: '退款合成公司' });
+  const other = await db.createUser({ role: 'company', name: '另一家合成公司' });
+  const intent = { user_id: 'refund-company-' + company.id, sku_id: 'actual-sku', callback_url: 'https://example.com:8443/contractor?payment_return=1', keyPrefix: 'refund-membership-' };
+  const payment = await db.getOrCreateOnlinePayment(company.id, null, intent);
+  const snap = (status, checkedAt) => ({ status, tradeNo: status === 'PAID' || status === 'REFUNDED' ? 'T-1' : null, checkedAt, fetchedAt: checkedAt || '2026-11-15T00:00:00.000Z', source: checkedAt ? 'ALIPAY_PURCHASE_QUERY_V3' : null });
+  const refundError = async (run, code) => assert.rejects(run, e => e instanceof db.PaymentRefundError && e.code === code);
+
+  await refundError(db.requestPaymentRefund(company.id, payment.id, '不想继续使用了'), 'NOT_PAID');
+  await db.recordPaymentTransaction(payment.id, snap('PENDING', '2026-11-15T01:00:00.000Z'));
+  await refundError(db.requestPaymentRefund(company.id, payment.id, '不想继续使用了'), 'NOT_PAID');
+  await db.recordPaymentTransaction(payment.id, snap('UNKNOWN', null));
+  await refundError(db.requestPaymentRefund(company.id, payment.id, '不想继续使用了'), 'NOT_PAID');
+
+  await db.recordPaymentTransaction(payment.id, snap('PAID', '2026-11-15T02:00:00.000Z'));
+  await refundError(db.requestPaymentRefund(other.id, payment.id, '不想继续使用了'), 'NOT_FOUND');
+  await refundError(db.requestPaymentRefund(company.id, payment.id, '短'), 'INVALID_REASON');
+  const [a, b] = await Promise.allSettled([db.requestPaymentRefund(company.id, payment.id, '不想继续使用了'), db.requestPaymentRefund(company.id, payment.id, '不想继续使用了')]);
+  assert.equal([a, b].filter(x => x.status === 'fulfilled').length, 1);
+  await refundError(db.decidePaymentRefund(payment.id, 'approve', '同'.repeat(1)), 'INVALID_NOTE');
+
+  await db.withdrawPaymentRefund(company.id, payment.id);
+  await refundError(db.withdrawPaymentRefund(company.id, payment.id), 'NOT_REQUESTED');
+  await refundError(db.decidePaymentRefund(payment.id, 'approve', '已核对'), 'NOT_REQUESTED');
+  await db.requestPaymentRefund(company.id, payment.id, '重新申请，原因同前');
+  await db.decidePaymentRefund(payment.id, 'reject', '不符合退款条件');
+  await db.requestPaymentRefund(company.id, payment.id, '再次申请退款');
+  await db.decidePaymentRefund(payment.id, 'approve', '同意，已在支付宝处理');
+  await refundError(db.requestPaymentRefund(company.id, payment.id, '重复申请退款'), 'REFUND_IN_PROGRESS');
+  await refundError(db.withdrawPaymentRefund(company.id, payment.id), 'NOT_REQUESTED');
+
+  let row = (await db.listMembershipPayments(company.id)).find(x => x.id === payment.id);
+  assert.equal(row.refund.status, 'approved');
+  assert.notEqual(row.status, 'refunded', 'an approval alone never counts as refunded');
+
+  await db.recordPaymentTransaction(payment.id, snap('PAID', '2026-11-15T01:30:00.000Z'));
+  row = (await db.listMembershipPayments(company.id)).find(x => x.id === payment.id);
+  assert.equal(row.transactionSnapshot.checkedAt, '2026-11-15T02:00:00.000Z', 'an older reading never replaces a newer one');
+
+  await db.recordPaymentTransaction(payment.id, snap('REFUNDED', '2026-11-15T03:00:00.000Z'));
+  row = (await db.listMembershipPayments(company.id)).find(x => x.id === payment.id);
+  assert.equal(row.refund.status, 'refunded');
+  assert.equal(row.status, 'refunded');
+  assert.equal(row.refund.confirmedAt, '2026-11-15T03:00:00.000Z');
+  assert.deepEqual(row.refund.history.map(h => h.action), ['request', 'withdraw', 'request', 'reject', 'request', 'approve', 'refunded']);
+  await db.recordPaymentTransaction(payment.id, snap('PAID', '2026-11-15T04:00:00.000Z'));
+  row = (await db.listMembershipPayments(company.id)).find(x => x.id === payment.id);
+  assert.equal(row.transactionSnapshot.status, 'REFUNDED', 'REFUNDED is final');
+  await refundError(db.requestPaymentRefund(company.id, payment.id, '已退款后再申请'), 'NOT_PAID');
+
+  const direct = await db.getOrCreateOnlinePayment(other.id, null, { ...intent, user_id: 'refund-company-' + other.id });
+  await db.recordPaymentTransaction(direct.id, snap('REFUNDED', '2026-11-15T05:00:00.000Z'));
+  const closed = (await db.listMembershipPayments(other.id)).find(x => x.id === direct.id);
+  assert.equal(closed.refund.status, 'refunded', 'a refund made outside this site is still recorded');
+  assert.deepEqual(closed.refund.history.map(h => h.actor), ['provider']);
+});
+
 let image, sealImage;
 before(async () => {
   image = 'data:image/png;base64,' + (await sharp({ create: { width: 120, height: 60, channels: 4, background: { r: 30, g: 60, b: 90, alpha: 1 } } }).png().toBuffer()).toString('base64');

@@ -1,4 +1,5 @@
 import { opcpay } from 'opcpay';
+import type { PaymentTransaction } from '@i-renovation/shared';
 
 // Keep the namespace stable: changing it disconnects previously purchased memberships.
 export function membershipIdentity(kind: 'company' | 'membership', id: number): string {
@@ -62,4 +63,22 @@ export function purchaseLinks(data: any) {
   const qrCode = link(data.purchase_qr_code);
   if (!purchaseUrl && !qrCode) throw new Error('尚未获得付款地址，请稍后重试');
   return { purchaseUrl, qrCode };
+}
+
+/** Reads the provider's last verified status for one purchase. Never invents a status the provider did not return. */
+export async function fetchTransaction(row: { purchaseIntent?: { user_id: string; idempotency_key: string } | null }): Promise<PaymentTransaction> {
+  const intent = row.purchaseIntent;
+  if (!intent) throw new Error('该记录是旧站或线下记录，没有一人付购买编号');
+  const fetchedAt = new Date().toISOString();
+  try {
+    const data = await payRequest('/transactions/query', { user_id: intent.user_id, idempotency_key: intent.idempotency_key });
+    if (data.user_id !== intent.user_id || data.idempotency_key !== intent.idempotency_key) throw new Error('支付服务返回了其他购买的记录');
+    if (!['PAID', 'PENDING', 'REFUNDED', 'UNKNOWN'].includes(data.status)) throw new Error('支付服务返回了无法识别的状态');
+    const text = (value: unknown) => (typeof value === 'string' && value ? value : null);
+    return { status: data.status, tradeNo: text(data.trade_no), checkedAt: text(data.checked_at), fetchedAt, source: text(data.status_source) };
+  } catch (error) {
+    // 404 means the service has no purchase under this user and key; any other failure is not an answer.
+    if ((error as { code?: string }).code === 'NOT_FOUND') return { status: 'NOT_FOUND', tradeNo: null, checkedAt: null, fetchedAt, source: null };
+    throw error;
+  }
 }

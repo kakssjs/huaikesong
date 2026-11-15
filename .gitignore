@@ -20,4 +20,5 @@ scripts/.workflow-test/
 scripts/.browser-acceptance/
 scripts/.chain-acceptance/
 scripts/.contract-provider-http/
+scripts/.payment-ledger-http/
 scripts/.contract-service/

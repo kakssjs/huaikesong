@@ -1,6 +1,7 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
 import ContractWorkbenchDialog from '../components/ContractWorkbenchDialog';
+import { paymentStatusLabel, refundStatusText, type LedgerRow, type LedgerSummary } from '@/lib/payment-labels';
 
 interface TaskRecord {
   id: number; projectId: number; projectName: string;
@@ -81,6 +82,42 @@ export default function BossConsole() {
     if (res.ok) setUserRows(await res.json()); else setUserMsg('读取用户列表失败');
   }, []);
   useEffect(() => { if (tab === 'users') loadUsers(); }, [tab, loadUsers]);
+
+  type ProviderFlags = { refund: boolean; bills: boolean; transactionList: boolean; transactionQuery: boolean } | null;
+  const [ledger, setLedger] = useState<{ rows: LedgerRow[]; summary: LedgerSummary; provider: ProviderFlags; refreshFailed: number[] } | null>(null);
+  const [ledgerMsg, setLedgerMsg] = useState('');
+  const [ledgerBusy, setLedgerBusy] = useState(false);
+  const [decideFor, setDecideFor] = useState<{ id: number; action: 'approve' | 'reject' } | null>(null);
+  const [decideNote, setDecideNote] = useState('');
+
+  const loadLedger = useCallback(async () => {
+    setLedgerBusy(true);
+    try {
+      const res = await fetch('/api/boss/payments', { cache: 'no-store' });
+      const body = await res.json();
+      if (!res.ok) { setLedgerMsg(body.error ?? '读取账单失败'); return; }
+      setLedger(body); setLedgerMsg('');
+    } catch { setLedgerMsg('读取账单失败，请稍后重试'); }
+    finally { setLedgerBusy(false); }
+  }, []);
+  useEffect(() => { if (tab === 'membership') void loadLedger(); }, [tab, loadLedger]);
+
+  async function decideRefund() {
+    if (!decideFor) return;
+    setLedgerBusy(true);
+    try {
+      const res = await fetch('/api/boss/payments', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paymentId: decideFor.id, action: decideFor.action, note: decideNote }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { setLedgerMsg(body.error ?? '处理失败'); return; }
+      setDecideFor(null); setDecideNote('');
+      setLedgerMsg(decideFor.action === 'approve' ? '已记录同意。请在支付宝侧完成退款，到账后此处会随支付服务状态变为“已退款”' : '已驳回该退款申请');
+      await loadLedger();
+    } catch { setLedgerMsg('处理失败，请稍后重试'); }
+    finally { setLedgerBusy(false); }
+  }
 
   async function removeUser(id: number) {
     setUserBusy(id); setUserMsg('');
@@ -366,6 +403,70 @@ export default function BossConsole() {
               </tbody>
             </table>
             </div>
+          </div>
+
+          <div className="panel" style={{ marginTop: 16 }}>
+            <div className="panel-title"><div className="accent-bar" />付款账单与退款<button className="btn btn-sm" style={{ marginLeft: 12 }} disabled={ledgerBusy} onClick={() => void loadLedger()}>刷新账单</button></div>
+            {ledgerMsg && <p role="status" style={{ fontSize: 13 }}>{ledgerMsg}</p>}
+            {ledger && (
+              <>
+                <div className="notice" style={{ marginBottom: 12, fontSize: 12 }}>
+                  一人付接口目前：
+                  {ledger.provider
+                    ? <>单笔交易查询{ledger.provider.transactionQuery ? '可用' : '未开放'}；退款{ledger.provider.refund ? '已开放' : '未开放'}；官方对账账单{ledger.provider.bills ? '已开放' : '未开放'}；交易列表{ledger.provider.transactionList ? '已开放' : '未开放'}。</>
+                    : <>暂时无法确认接口开放情况。</>}
+                  本页账单由本站购买记录加单笔状态核验生成，不是支付宝官方对账单；平台同意退款只记录决定，退款是否完成以一人付返回“已退款”为准。
+                </div>
+                <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 12 }}>
+                  <div className="stat-card"><div className="label">已支付</div><div className="value green">{ledger.summary.paidCount} 笔 · ¥{ledger.summary.paidCny}</div></div>
+                  <div className="stat-card"><div className="label">已退款</div><div className="value purple">{ledger.summary.refundedCount} 笔 · ¥{ledger.summary.refundedCny}</div></div>
+                  <div className="stat-card"><div className="label">待支付 / 待确认</div><div className="value cyan">{ledger.summary.pendingCount} / {ledger.summary.unknownCount}</div></div>
+                  <div className="stat-card"><div className="label">待处理退款</div><div className="value orange">{ledger.summary.refundRequested}</div></div>
+                  <div className="stat-card"><div className="label">已同意待到账</div><div className="value orange">{ledger.summary.refundApproved}</div></div>
+                </div>
+                {ledger.refreshFailed.length > 0 && <p className="notice notice-warn">部分记录暂时无法向支付服务刷新，显示的是上次读取的结果。</p>}
+                <div className="wf-table-wrap">
+                  <table className="data-table">
+                    <thead><tr><th>单号</th><th>公司</th><th>创建时间</th><th>金额</th><th>付款状态</th><th>最近核验</th><th>支付宝订单号</th><th>退款</th><th>操作</th></tr></thead>
+                    <tbody>
+                      {ledger.rows.map(r => (
+                        <tr key={r.id}>
+                          <td>{r.id}</td>
+                          <td>{r.companyName}</td>
+                          <td>{r.createdAt.slice(0, 16).replace('T', ' ')}</td>
+                          <td>¥{r.amountCny}</td>
+                          <td><span className={paymentStatusLabel(r).cls}>{paymentStatusLabel(r).text}</span></td>
+                          <td>{r.payment?.checkedAt ? r.payment.checkedAt.slice(0, 16).replace('T', ' ') : '-'}</td>
+                          <td>{r.payment?.tradeNo ?? '-'}</td>
+                          <td>
+                            {refundStatusText(r.refund)}
+                            {r.refund?.reason ? <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>原因：{r.refund.reason}</div> : null}
+                            {r.refund?.decisionNote ? <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>意见：{r.refund.decisionNote}</div> : null}
+                          </td>
+                          <td>
+                            {r.refund?.status === 'requested' && (
+                              <>
+                                <button className="btn btn-sm btn-primary" disabled={ledgerBusy} onClick={() => { setDecideFor({ id: r.id, action: 'approve' }); setDecideNote(''); }}>同意</button>
+                                <button className="btn btn-sm btn-danger" style={{ marginLeft: 6 }} disabled={ledgerBusy} onClick={() => { setDecideFor({ id: r.id, action: 'reject' }); setDecideNote(''); }}>驳回</button>
+                              </>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      {ledger.rows.length === 0 && <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-dim)', padding: 20 }}>暂无付款记录</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+                {decideFor && (
+                  <div style={{ marginTop: 12 }}>
+                    <label htmlFor="refund-note" style={{ fontSize: 13 }}>单号 {decideFor.id}：{decideFor.action === 'approve' ? '同意退款' : '驳回退款'}，处理意见（必填，2–200 字）</label>
+                    <textarea id="refund-note" className="form-input" maxLength={200} value={decideNote} onChange={e => setDecideNote(e.target.value)} />
+                    <button className="btn btn-primary" disabled={ledgerBusy || decideNote.trim().length < 2} onClick={() => void decideRefund()}>确认提交</button>
+                    <button className="btn btn-ghost" style={{ marginLeft: 8 }} onClick={() => setDecideFor(null)}>取消</button>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </>
       )}

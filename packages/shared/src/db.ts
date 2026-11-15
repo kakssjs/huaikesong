@@ -202,6 +202,18 @@ export const companyContractProfiles = pgTable('company_contract_profiles', {
   companyId: integer('company_id').primaryKey(), profile: jsonb('profile').notNull(), updatedAt: text('updated_at').notNull(),
 });
 
+/** What the payment service last verified for one purchase. NOT_FOUND means the service has no such purchase record. */
+export type PaymentTransaction = {
+  status: 'PAID' | 'PENDING' | 'REFUNDED' | 'UNKNOWN' | 'NOT_FOUND';
+  tradeNo: string | null; checkedAt: string | null; fetchedAt: string; source: string | null;
+};
+/** A refund is requested here, decided by the platform, and only counted as refunded once the payment service verifies REFUNDED. */
+export type PaymentRefund = {
+  status: 'requested' | 'approved' | 'rejected' | 'withdrawn' | 'refunded';
+  reason: string; requestedAt: string; decidedAt?: string; decisionNote?: string; confirmedAt?: string;
+  history: Array<{ at: string; actor: 'company' | 'boss' | 'provider'; action: string; note?: string }>;
+};
+
 export const membershipPayments = pgTable('membership_payments', {
   id: serial('id').primaryKey(),
   companyId: integer('company_id').notNull(),
@@ -213,6 +225,8 @@ export const membershipPayments = pgTable('membership_payments', {
   status: text('status').notNull().default('pending'),
   paymentReference: text('payment_reference'),
   purchaseIntent: jsonb('purchase_intent').$type<{ user_id: string; sku_id: string; callback_url: string; idempotency_key: string }>(),
+  transactionSnapshot: jsonb('transaction_snapshot').$type<PaymentTransaction>(),
+  refund: jsonb('refund').$type<PaymentRefund>(),
   createdAt: text('created_at').notNull(),
   paidAt: text('paid_at'),
 });
@@ -353,6 +367,8 @@ CREATE TABLE IF NOT EXISTS company_contract_profiles (
 ALTER TABLE membership_payments ADD COLUMN IF NOT EXISTS billing_cycle text DEFAULT 'annual';
 ALTER TABLE membership_payments ADD COLUMN IF NOT EXISTS period_months integer DEFAULT 12;
 ALTER TABLE membership_payments ADD COLUMN IF NOT EXISTS purchase_intent jsonb;
+ALTER TABLE membership_payments ADD COLUMN IF NOT EXISTS transaction_snapshot jsonb;
+ALTER TABLE membership_payments ADD COLUMN IF NOT EXISTS refund jsonb;
 CREATE TABLE IF NOT EXISTS price_references (
   id text PRIMARY KEY, city text NOT NULL, category text NOT NULL, item text NOT NULL, unit text NOT NULL,
   low double precision NOT NULL, high double precision NOT NULL, note text NOT NULL DEFAULT '',
@@ -739,6 +755,83 @@ export async function expireOnlinePayment(id: number) {
   const db = await getDb();
   await db.update(membershipPayments).set({ status: 'entry_expired' })
     .where(and(eq(membershipPayments.id, id), eq(membershipPayments.status, 'pending')));
+}
+
+export class PaymentRefundError extends Error {
+  constructor(message: string, public code: string, public status = 409) { super(message); this.name = 'PaymentRefundError'; }
+}
+
+/** Keeps what the payment service last verified for one purchase. REFUNDED is final and closes any refund request. */
+export async function recordPaymentTransaction(id: number, snapshot: PaymentTransaction) {
+  const db = await getDb();
+  return db.transaction(async tx => {
+    const [row] = await tx.select().from(membershipPayments).where(eq(membershipPayments.id, id));
+    if (!row) return null;
+    const old = row.transactionSnapshot;
+    if (old?.status === 'REFUNDED' && snapshot.status !== 'REFUNDED') return row;
+    if (old?.checkedAt && snapshot.checkedAt && Date.parse(snapshot.checkedAt) < Date.parse(old.checkedAt)) return row;
+    const values: Partial<typeof membershipPayments.$inferInsert> = { transactionSnapshot: snapshot };
+    if (snapshot.status === 'REFUNDED' && row.refund?.status !== 'refunded') {
+      const at = snapshot.checkedAt || snapshot.fetchedAt, prior = row.refund;
+      values.refund = {
+        status: 'refunded', reason: prior?.reason ?? '支付服务确认已退款（无站内申请）', requestedAt: prior?.requestedAt ?? at,
+        ...(prior?.decidedAt ? { decidedAt: prior.decidedAt } : {}), ...(prior?.decisionNote ? { decisionNote: prior.decisionNote } : {}),
+        confirmedAt: at, history: [...(prior?.history ?? []), { at, actor: 'provider', action: 'refunded' }],
+      };
+      values.status = 'refunded';
+    }
+    await tx.update(membershipPayments).set(values).where(eq(membershipPayments.id, id));
+    return { ...row, ...values };
+  });
+}
+
+/** A company asks for its own paid purchase to be refunded. Only a purchase the payment service verified as PAID qualifies. */
+export async function requestPaymentRefund(companyId: number, paymentId: number, reason: unknown) {
+  const text = typeof reason === 'string' ? reason.trim() : '';
+  if (text.length < 5 || text.length > 200) throw new PaymentRefundError('退款原因需 5–200 字', 'INVALID_REASON', 400);
+  const db = await getDb();
+  return db.transaction(async tx => {
+    const [row] = await tx.select().from(membershipPayments).where(and(eq(membershipPayments.id, paymentId), eq(membershipPayments.companyId, companyId)));
+    if (!row) throw new PaymentRefundError('付款记录不存在', 'NOT_FOUND', 404);
+    if (row.transactionSnapshot?.status !== 'PAID') throw new PaymentRefundError('仅支付服务已确认为“已支付”的付款可申请退款', 'NOT_PAID');
+    if (row.refund && ['requested', 'approved', 'refunded'].includes(row.refund.status)) throw new PaymentRefundError('该笔付款已有进行中或已完成的退款', 'REFUND_IN_PROGRESS');
+    const at = now();
+    const refund: PaymentRefund = { status: 'requested', reason: text, requestedAt: at,
+      history: [...(row.refund?.history ?? []), { at, actor: 'company', action: 'request', note: text }] };
+    await tx.update(membershipPayments).set({ refund }).where(eq(membershipPayments.id, paymentId));
+    return { ...row, refund };
+  });
+}
+
+/** The company can take the request back until the platform has decided. */
+export async function withdrawPaymentRefund(companyId: number, paymentId: number) {
+  const db = await getDb();
+  return db.transaction(async tx => {
+    const [row] = await tx.select().from(membershipPayments).where(and(eq(membershipPayments.id, paymentId), eq(membershipPayments.companyId, companyId)));
+    if (!row) throw new PaymentRefundError('付款记录不存在', 'NOT_FOUND', 404);
+    if (row.refund?.status !== 'requested') throw new PaymentRefundError('只有待平台处理的退款申请可以撤回', 'NOT_REQUESTED');
+    const at = now();
+    const refund: PaymentRefund = { ...row.refund, status: 'withdrawn', history: [...row.refund.history, { at, actor: 'company', action: 'withdraw' }] };
+    await tx.update(membershipPayments).set({ refund }).where(eq(membershipPayments.id, paymentId));
+    return { ...row, refund };
+  });
+}
+
+/** Platform decision. Approving records the decision only; the money moves outside this app and REFUNDED must be verified by the payment service. */
+export async function decidePaymentRefund(paymentId: number, decision: 'approve' | 'reject', note: unknown) {
+  const text = typeof note === 'string' ? note.trim() : '';
+  if (text.length < 2 || text.length > 200) throw new PaymentRefundError('处理意见需 2–200 字', 'INVALID_NOTE', 400);
+  const db = await getDb();
+  return db.transaction(async tx => {
+    const [row] = await tx.select().from(membershipPayments).where(eq(membershipPayments.id, paymentId));
+    if (!row) throw new PaymentRefundError('付款记录不存在', 'NOT_FOUND', 404);
+    if (row.refund?.status !== 'requested') throw new PaymentRefundError('该付款没有待处理的退款申请', 'NOT_REQUESTED');
+    const at = now();
+    const refund: PaymentRefund = { ...row.refund, status: decision === 'approve' ? 'approved' : 'rejected', decidedAt: at, decisionNote: text,
+      history: [...row.refund.history, { at, actor: 'boss', action: decision, note: text }] };
+    await tx.update(membershipPayments).set({ refund }).where(eq(membershipPayments.id, paymentId));
+    return { ...row, refund };
+  });
 }
 
 /** 每月 1 日重置客户资源用量 */

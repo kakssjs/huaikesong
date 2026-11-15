@@ -6,6 +6,7 @@ import { CONTRACTOR_MEMBERSHIP_TIERS, getMembershipTier, type MembershipBillingC
 import { estimateContractServiceFee, type CommissionQuote } from "@i-renovation/shared/commission";
 import { explainFairBidding } from "@i-renovation/shared/fair-bidding";
 import { projectCover, type ProjectCover } from "@/lib/visuals";
+import { paymentStatusLabel, refundStatusText, type LedgerRow, type LedgerSummary } from "@/lib/payment-labels";
 import ContractWorkbenchDialog from '../components/ContractWorkbenchDialog';
 import ProjectChatButton from '../components/ProjectChatButton';
 
@@ -198,6 +199,37 @@ export default function ContractorPortal() {
   }, [user]);
 
   const [checkout, setCheckout] = useState<{ paymentId: number; purchaseUrl?: string; qrCode?: string } | null>(null);
+  const [ledger, setLedger] = useState<{ rows: LedgerRow[]; summary: LedgerSummary; refreshFailed: number[] } | null>(null);
+  const [ledgerMsg, setLedgerMsg] = useState('');
+  const [refundFor, setRefundFor] = useState<number | null>(null);
+  const [refundReason, setRefundReason] = useState('');
+  const [ledgerBusy, setLedgerBusy] = useState(false);
+
+  const loadLedger = useCallback(async () => {
+    setLedgerBusy(true); setLedgerMsg('');
+    try {
+      const res = await fetch('/api/company/membership/ledger', { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '读取账单失败');
+      setLedger(data);
+    } catch (error) { setLedgerMsg(error instanceof Error ? error.message : '读取账单失败，请稍后重试'); }
+    finally { setLedgerBusy(false); }
+  }, []);
+
+  async function refundAction(paymentId: number, action: 'request' | 'withdraw') {
+    setLedgerBusy(true); setLedgerMsg('');
+    try {
+      const res = await fetch('/api/company/membership/ledger', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paymentId, action, ...(action === 'request' ? { reason: refundReason } : {}) }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '退款操作失败');
+      setRefundFor(null); setRefundReason('');
+      setLedgerMsg(action === 'request' ? '退款申请已提交，等待平台处理' : '退款申请已撤回');
+      await loadLedger();
+    } catch (error) { setLedgerMsg(error instanceof Error ? error.message : '退款操作失败'); setLedgerBusy(false); }
+  }
   // 向支付服务查询当前权益并同步到会员状态（付款由支付服务自动确认，不需要人工审核）
   const syncPayment = useCallback(async () => {
     const res = await fetch('/api/company/membership/access', { cache: 'no-store' });
@@ -506,14 +538,7 @@ export default function ContractorPortal() {
                     <div className="panel-title" style={{ color: '#fffdf8' }}>
                       <div className="accent-bar" />
                       会员与客户资源
-                      <button className="btn" onClick={async () => {
-                        try {
-                          const res = await fetch('/api/company/membership/apply');
-                          if (!res.ok) throw new Error('读取付款记录失败');
-                          const rows = await res.json() as Array<{ id: number; amountCny: number; status: string }>;
-                          window.alert(rows.map(p => `单号 ${p.id} · ¥${p.amountCny} · ${{ pending: '等待权益确认', entitlement_confirmed: '权益已确认（非支付回执）', paid: '已收款开通', rejected: '已驳回' }[p.status] ?? p.status}`).join('\n') || '暂无记录');
-                        } catch { window.alert('读取付款记录失败，请稍后重试'); }
-                      }}>付款记录</button>
+                      <button className="btn" disabled={ledgerBusy} onClick={() => void loadLedger()}>付款账单 / 退款</button>
                       <small>{getMembershipTier(membership?.membershipTier).name} · {membership?.membershipStatus === 'active' ? '已开通' : '待支付'}</small>
                     </div>
                     <p style={{ color: 'rgba(255,255,255,.76)', lineHeight: 1.8, margin: 0 }}>
@@ -527,6 +552,55 @@ export default function ContractorPortal() {
                     {checkout.purchaseUrl && <a className="btn btn-primary" href={checkout.purchaseUrl} target="_blank" rel="noopener noreferrer">打开支付宝付款</a>}
                     {checkout.qrCode && <a className="btn" href={checkout.qrCode} target="_blank" rel="noopener noreferrer">查看支付宝付款码</a>}
                   </div>}
+                  {(ledger || ledgerMsg) && (
+                    <div className="panel" style={{ marginTop: 16 }}>
+                      <div className="panel-title"><div className="accent-bar" />付款账单与退款</div>
+                      {ledgerMsg && <p role="status" style={{ fontSize: 13 }}>{ledgerMsg}</p>}
+                      {ledger && (
+                        <>
+                          <p style={{ color: 'var(--text-dim)', fontSize: 12 }}>
+                            付款状态为一人付最近一次验签的结果，不是实时查单；“待确认”不等于未支付。已支付 {ledger.summary.paidCount} 笔 · ¥{ledger.summary.paidCny}，已退款 {ledger.summary.refundedCount} 笔 · ¥{ledger.summary.refundedCny}。金额为本站记录的套餐价格，一人付接口不返回实付金额。
+                          </p>
+                          {ledger.refreshFailed.length > 0 && <p className="notice notice-warn">部分记录暂时无法向支付服务刷新，下面显示的是上次读取的结果。</p>}
+                          <div className="wf-table-wrap">
+                            <table className="data-table">
+                              <thead><tr><th>单号</th><th>创建时间</th><th>金额</th><th>付款状态</th><th>最近核验</th><th>退款</th><th>操作</th></tr></thead>
+                              <tbody>
+                                {ledger.rows.map(r => (
+                                  <tr key={r.id}>
+                                    <td>{r.id}</td>
+                                    <td>{r.createdAt.slice(0, 16).replace('T', ' ')}</td>
+                                    <td>¥{r.amountCny}</td>
+                                    <td><span className={paymentStatusLabel(r).cls}>{paymentStatusLabel(r).text}</span></td>
+                                    <td>{r.payment?.checkedAt ? r.payment.checkedAt.slice(0, 16).replace('T', ' ') : '-'}</td>
+                                    <td>{refundStatusText(r.refund)}{r.refund?.decisionNote ? `：${r.refund.decisionNote}` : ''}</td>
+                                    <td>
+                                      {r.payment?.status === 'PAID' && (!r.refund || ['rejected', 'withdrawn'].includes(r.refund.status)) && (
+                                        <button className="btn btn-sm" disabled={ledgerBusy} onClick={() => { setRefundFor(r.id); setRefundReason(''); }}>申请退款</button>
+                                      )}
+                                      {r.refund?.status === 'requested' && (
+                                        <button className="btn btn-sm" disabled={ledgerBusy} onClick={() => void refundAction(r.id, 'withdraw')}>撤回申请</button>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                                {ledger.rows.length === 0 && <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-dim)', padding: 20 }}>暂无付款记录</td></tr>}
+                              </tbody>
+                            </table>
+                          </div>
+                          {refundFor !== null && (
+                            <div style={{ marginTop: 12 }}>
+                              <label htmlFor="refund-reason" style={{ fontSize: 13 }}>单号 {refundFor} 的退款原因（5–200 字）</label>
+                              <textarea id="refund-reason" className="form-input" maxLength={200} value={refundReason} onChange={e => setRefundReason(e.target.value)} />
+                              <p style={{ color: 'var(--text-dim)', fontSize: 12 }}>平台同意后，款项由平台在支付宝侧退回；只有一人付返回“已退款”才算退款完成，会员权益不会因申请而立即取消。</p>
+                              <button className="btn btn-primary" disabled={ledgerBusy || refundReason.trim().length < 5} onClick={() => void refundAction(refundFor, 'request')}>提交退款申请</button>
+                              <button className="btn btn-ghost" style={{ marginLeft: 8 }} onClick={() => setRefundFor(null)}>取消</button>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
                   <div className="role-feature-grid">
                     {CONTRACTOR_MEMBERSHIP_TIERS.filter(t => t.id === 'basic').map((tier) => {
                       const active = membership?.membershipTier === tier.id;

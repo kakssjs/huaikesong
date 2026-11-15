@@ -369,5 +369,18 @@ export const EN: Record<string, string> = {
   '予舍 · 住宅设计与装修平台 · 生成结果供参考，最终以签约量房为准': 'Homora · home design & renovation · results are for reference; the signed site survey is final',
   // 站名改为 予舍（2026-11-08）
   '予舍 · AI 装修智能体平台': 'Homora · AI renovation agents', '予舍': 'Homora',
+  // 付款账单与退款（2026-11-15）：状态以一人付最近一次验签结果为准
+  '付款账单 / 退款': 'Payments & refunds', '付款账单与退款': 'Payments & refunds', '刷新账单': 'Refresh',
+  '读取账单失败': 'Couldn\'t load the ledger', '读取账单失败，请稍后重试': 'Couldn\'t load the ledger, please retry', '账单读取失败，请稍后重试': 'Couldn\'t load the ledger, please retry',
+  '创建时间': 'Created', '金额': 'Amount', '付款状态': 'Payment', '最近核验': 'Last verified', '支付宝订单号': 'Alipay trade no.', '退款': 'Refund', '暂无付款记录': 'No payments yet',
+  '已支付': 'Paid', '已退款': 'Refunded', '未核验': 'Not verified', '旧站/线下记录': 'Legacy / offline record', '支付服务无此记录': 'Not found at payment service',
+  '待平台处理': 'Awaiting platform', '平台已同意，等待退款到账': 'Approved, waiting for the refund', '平台已驳回': 'Rejected', '已撤回': 'Withdrawn',
+  '申请退款': 'Request refund', '撤回申请': 'Withdraw', '提交退款申请': 'Submit request', '同意': 'Approve', '确认提交': 'Submit',
+  '退款申请已提交，等待平台处理': 'Refund request submitted, waiting for the platform', '退款申请已撤回': 'Refund request withdrawn', '退款操作失败': 'Refund action failed',
+  '部分记录暂时无法向支付服务刷新，下面显示的是上次读取的结果。': 'Some records could not be refreshed from the payment service; the last result is shown below.',
+  '部分记录暂时无法向支付服务刷新，显示的是上次读取的结果。': 'Some records could not be refreshed from the payment service; the last result is shown.',
+  '待支付 / 待确认': 'Unpaid / unconfirmed', '待处理退款': 'Refunds to handle', '已同意待到账': 'Approved, awaiting funds',
+  '已记录同意。请在支付宝侧完成退款，到账后此处会随支付服务状态变为“已退款”': 'Approval recorded. Complete the refund on the Alipay side; this page turns to "Refunded" once the payment service reports it.',
+  '已驳回该退款申请': 'Refund request rejected',
   ...WORKFLOW_EN,
 };

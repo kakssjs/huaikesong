@@ -370,9 +370,9 @@ export const EN: Record<string, string> = {
   // 站名改为 予舍（2026-11-08）
   '予舍 · AI 装修智能体平台': 'Homora · AI renovation agents', '予舍': 'Homora',
   // 付款账单与退款（2026-11-15）：状态以一人付最近一次验签结果为准
-  '付款账单 / 退款': 'Payments & refunds', '付款账单与退款': 'Payments & refunds', '刷新账单': 'Refresh',
+  '会员与账单': 'Membership & billing', '付款账单与退款': 'Payments & refunds', '刷新账单': 'Refresh',
   '读取账单失败': 'Couldn\'t load the ledger', '读取账单失败，请稍后重试': 'Couldn\'t load the ledger, please retry', '账单读取失败，请稍后重试': 'Couldn\'t load the ledger, please retry',
-  '创建时间': 'Created', '金额': 'Amount', '付款状态': 'Payment', '最近核验': 'Last verified', '支付宝订单号': 'Alipay trade no.', '退款': 'Refund', '暂无付款记录': 'No payments yet',
+  '创建时间': 'Created', '金额': 'Amount', '付款状态': 'Payment', '最近核验': 'Last verified', '最近核验（北京时间）': 'Last verified (Beijing time)', '支付宝订单号': 'Alipay trade no.', '退款': 'Refund', '暂无付款记录': 'No payments yet',
   '已支付': 'Paid', '已退款': 'Refunded', '未核验': 'Not verified', '旧站/线下记录': 'Legacy / offline record', '支付服务无此记录': 'Not found at payment service',
   '待平台处理': 'Awaiting platform', '平台已同意，等待退款到账': 'Approved, waiting for the refund', '平台已驳回': 'Rejected', '已撤回': 'Withdrawn',
   '申请退款': 'Request refund', '撤回申请': 'Withdraw', '提交退款申请': 'Submit request', '同意': 'Approve', '确认提交': 'Submit',

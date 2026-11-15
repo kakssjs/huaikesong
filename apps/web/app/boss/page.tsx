@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
 import ContractWorkbenchDialog from '../components/ContractWorkbenchDialog';
-import { paymentStatusLabel, refundStatusText, type LedgerRow, type LedgerSummary } from '@/lib/payment-labels';
+import { formatBeijing, paymentStatusLabel, refundStatusText, type LedgerRow, type LedgerSummary } from '@/lib/payment-labels';
 
 interface TaskRecord {
   id: number; projectId: number; projectName: string;
@@ -96,7 +96,7 @@ export default function BossConsole() {
       const res = await fetch('/api/boss/payments', { cache: 'no-store' });
       const body = await res.json();
       if (!res.ok) { setLedgerMsg(body.error ?? '读取账单失败'); return; }
-      setLedger(body); setLedgerMsg('');
+      setLedger(body);
     } catch { setLedgerMsg('读取账单失败，请稍后重试'); }
     finally { setLedgerBusy(false); }
   }, []);
@@ -406,7 +406,7 @@ export default function BossConsole() {
           </div>
 
           <div className="panel" style={{ marginTop: 16 }}>
-            <div className="panel-title"><div className="accent-bar" />付款账单与退款<button className="btn btn-sm" style={{ marginLeft: 12 }} disabled={ledgerBusy} onClick={() => void loadLedger()}>刷新账单</button></div>
+            <div className="panel-title"><div className="accent-bar" />付款账单与退款<button className="btn btn-sm" style={{ marginLeft: 12 }} disabled={ledgerBusy} onClick={() => { setLedgerMsg(''); void loadLedger(); }}>刷新账单</button></div>
             {ledgerMsg && <p role="status" style={{ fontSize: 13 }}>{ledgerMsg}</p>}
             {ledger && (
               <>
@@ -426,19 +426,19 @@ export default function BossConsole() {
                 </div>
                 {ledger.refreshFailed.length > 0 && <p className="notice notice-warn">部分记录暂时无法向支付服务刷新，显示的是上次读取的结果。</p>}
                 <div className="wf-table-wrap">
-                  <table className="data-table">
-                    <thead><tr><th>单号</th><th>公司</th><th>创建时间</th><th>金额</th><th>付款状态</th><th>最近核验</th><th>支付宝订单号</th><th>退款</th><th>操作</th></tr></thead>
+                  <table className="data-table" style={{ minWidth: 1000, whiteSpace: 'nowrap' }}>
+                    <thead><tr><th>单号</th><th>公司</th><th>创建时间</th><th>金额</th><th>付款状态</th><th>最近核验（北京时间）</th><th>支付宝订单号</th><th>退款</th><th>操作</th></tr></thead>
                     <tbody>
                       {ledger.rows.map(r => (
                         <tr key={r.id}>
                           <td>{r.id}</td>
                           <td>{r.companyName}</td>
-                          <td>{r.createdAt.slice(0, 16).replace('T', ' ')}</td>
+                          <td>{formatBeijing(r.createdAt)}</td>
                           <td>¥{r.amountCny}</td>
                           <td><span className={paymentStatusLabel(r).cls}>{paymentStatusLabel(r).text}</span></td>
-                          <td>{r.payment?.checkedAt ? r.payment.checkedAt.slice(0, 16).replace('T', ' ') : '-'}</td>
+                          <td>{formatBeijing(r.payment?.checkedAt)}</td>
                           <td>{r.payment?.tradeNo ?? '-'}</td>
-                          <td>
+                          <td style={{ whiteSpace: 'normal', minWidth: 200 }}>
                             {refundStatusText(r.refund)}
                             {r.refund?.reason ? <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>原因：{r.refund.reason}</div> : null}
                             {r.refund?.decisionNote ? <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>意见：{r.refund.decisionNote}</div> : null}

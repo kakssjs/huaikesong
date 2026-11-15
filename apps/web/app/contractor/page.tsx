@@ -6,7 +6,7 @@ import { CONTRACTOR_MEMBERSHIP_TIERS, getMembershipTier, type MembershipBillingC
 import { estimateContractServiceFee, type CommissionQuote } from "@i-renovation/shared/commission";
 import { explainFairBidding } from "@i-renovation/shared/fair-bidding";
 import { projectCover, type ProjectCover } from "@/lib/visuals";
-import { paymentStatusLabel, refundStatusText, type LedgerRow, type LedgerSummary } from "@/lib/payment-labels";
+import { formatBeijing, paymentStatusLabel, refundStatusText, type LedgerRow, type LedgerSummary } from "@/lib/payment-labels";
 import ContractWorkbenchDialog from '../components/ContractWorkbenchDialog';
 import ProjectChatButton from '../components/ProjectChatButton';
 
@@ -206,7 +206,7 @@ export default function ContractorPortal() {
   const [ledgerBusy, setLedgerBusy] = useState(false);
 
   const loadLedger = useCallback(async () => {
-    setLedgerBusy(true); setLedgerMsg('');
+    setLedgerBusy(true);
     try {
       const res = await fetch('/api/company/membership/ledger', { cache: 'no-store' });
       const data = await res.json();
@@ -215,6 +215,8 @@ export default function ContractorPortal() {
     } catch (error) { setLedgerMsg(error instanceof Error ? error.message : '读取账单失败，请稍后重试'); }
     finally { setLedgerBusy(false); }
   }, []);
+
+  useEffect(() => { if (tab === "membership" && user?.role === "company") void loadLedger(); }, [tab, user, loadLedger]);
 
   async function refundAction(paymentId: number, action: 'request' | 'withdraw') {
     setLedgerBusy(true); setLedgerMsg('');
@@ -495,6 +497,7 @@ export default function ContractorPortal() {
                 { key: 'projects', label: '开放项目' },
                 { key: 'bids', label: '我的竞价' },
                 { key: 'orders', label: '订单管理' },
+                { key: 'membership', label: '会员与账单' },
               ] as const
             ).map(t => (
               <button
@@ -538,7 +541,7 @@ export default function ContractorPortal() {
                     <div className="panel-title" style={{ color: '#fffdf8' }}>
                       <div className="accent-bar" />
                       会员与客户资源
-                      <button className="btn" disabled={ledgerBusy} onClick={() => void loadLedger()}>付款账单 / 退款</button>
+                      <button className="btn" disabled={ledgerBusy} onClick={() => { setLedgerMsg(''); void loadLedger(); }}>刷新账单</button>
                       <small>{getMembershipTier(membership?.membershipTier).name} · {membership?.membershipStatus === 'active' ? '已开通' : '待支付'}</small>
                     </div>
                     <p style={{ color: 'rgba(255,255,255,.76)', lineHeight: 1.8, margin: 0 }}>
@@ -563,17 +566,17 @@ export default function ContractorPortal() {
                           </p>
                           {ledger.refreshFailed.length > 0 && <p className="notice notice-warn">部分记录暂时无法向支付服务刷新，下面显示的是上次读取的结果。</p>}
                           <div className="wf-table-wrap">
-                            <table className="data-table">
-                              <thead><tr><th>单号</th><th>创建时间</th><th>金额</th><th>付款状态</th><th>最近核验</th><th>退款</th><th>操作</th></tr></thead>
+                            <table className="data-table" style={{ minWidth: 760, whiteSpace: 'nowrap' }}>
+                              <thead><tr><th>单号</th><th>创建时间</th><th>金额</th><th>付款状态</th><th>最近核验（北京时间）</th><th>退款</th><th>操作</th></tr></thead>
                               <tbody>
                                 {ledger.rows.map(r => (
                                   <tr key={r.id}>
                                     <td>{r.id}</td>
-                                    <td>{r.createdAt.slice(0, 16).replace('T', ' ')}</td>
+                                    <td>{formatBeijing(r.createdAt)}</td>
                                     <td>¥{r.amountCny}</td>
                                     <td><span className={paymentStatusLabel(r).cls}>{paymentStatusLabel(r).text}</span></td>
-                                    <td>{r.payment?.checkedAt ? r.payment.checkedAt.slice(0, 16).replace('T', ' ') : '-'}</td>
-                                    <td>{refundStatusText(r.refund)}{r.refund?.decisionNote ? `：${r.refund.decisionNote}` : ''}</td>
+                                    <td>{formatBeijing(r.payment?.checkedAt)}</td>
+                                    <td style={{ whiteSpace: 'normal', minWidth: 180 }}>{refundStatusText(r.refund)}{r.refund?.decisionNote ? `：${r.refund.decisionNote}` : ''}</td>
                                     <td>
                                       {r.payment?.status === 'PAID' && (!r.refund || ['rejected', 'withdrawn'].includes(r.refund.status)) && (
                                         <button className="btn btn-sm" disabled={ledgerBusy} onClick={() => { setRefundFor(r.id); setRefundReason(''); }}>申请退款</button>

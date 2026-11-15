@@ -27,3 +27,11 @@ export function paymentStatusLabel(row: Pick<LedgerRow, 'payment' | 'source'>) {
 export function refundStatusText(refund: LedgerRow['refund']): string {
   return refund ? (REFUND_LABEL[refund.status] ?? refund.status) : '-';
 }
+
+const BEIJING = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+/** Times from the database and the payment service are UTC ISO strings; show them in Beijing time like the rest of the site. */
+export function formatBeijing(iso: string | null | undefined): string {
+  if (!iso) return '-';
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? BEIJING.format(t).replace(/\//g, '-') : '-';
+}

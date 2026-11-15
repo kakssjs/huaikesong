@@ -48,6 +48,7 @@ type Bid = {
 type MyBid = Bid & { projectName: string; estimatedCostCny?: number; profitCny?: number; platformCommissionCny?: number; netProfitCny?: number };
 
 type MembershipProfile = {
+  demo?: number;
   membershipStartedAt?: string;
   membershipPaidAmount?: number;
   companyScale?: string;
@@ -132,6 +133,18 @@ export default function ContractorPortal() {
   const [bidAmount, setBidAmount] = useState("");
   const [bidWeeks, setBidWeeks] = useState("");
   const [bidNote, setBidNote] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const bidForRef = useRef(bidFor);
+  bidForRef.current = bidFor;
+  async function draftQuote(orderId: number) {
+    setAiBusy(true); setError('');
+    try {
+      const res = await fetch('/api/company/assistant', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orderId }) });
+      const body = await res.json(); if (!res.ok) throw new Error(body.error || '生成失败');
+      if (bidForRef.current === orderId) setBidNote(old => old.trim() ? old : body.text);
+    } catch (e) { setError(e instanceof Error ? e.message : 'AI生成失败'); }
+    finally { setAiBusy(false); }
+  }
   const [bidCost, setBidCost] = useState("");
   const [commissionPreview, setCommissionPreview] = useState<CommissionQuote | null>(null);
   const [busy, setBusy] = useState(false);
@@ -410,6 +423,7 @@ export default function ContractorPortal() {
 
   return (
     <main className="container" style={{ paddingTop: 24 }}>
+      {membership?.demo === 1 && <p className="notice notice-warn">临时演示装修队：仅可查看与投标演示项目，演示访问不代表已付款或通过真实资质认证，不支持真实付款。</p>}
       <section
         className="role-hero"
         style={{
@@ -724,6 +738,7 @@ export default function ContractorPortal() {
                             {financialError && <p role="alert" className="wf-error">{financialError}</p>}
                             <div className="form-group">
                               <label>备注说明</label>
+                              <button type="button" className="btn btn-ghost" style={{ marginBottom: 8 }} disabled={aiBusy || !!bidNote.trim()} onClick={() => void draftQuote(o.id)}>{aiBusy ? 'DeepSeek 正在生成…' : 'AI报价说明草稿（人工确认后提交）'}</button>
                               <textarea
                                 className="form-input"
                                 rows={3}

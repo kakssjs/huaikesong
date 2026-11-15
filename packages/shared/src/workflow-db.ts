@@ -17,6 +17,11 @@ const operationKey = (orderId:number,key:string) => selectedWorkflow.getStore()?
 /** Mode is request-scoped; concurrent requests never change another party's selected contract. */
 export async function withOrderWorkflowMode<T>(orderId:number,actor:WorkflowActor,mode:string|null|undefined,run:()=>Promise<T>):Promise<T> {
   if(mode!==undefined&&mode!==null&&mode!=='demo'&&mode!=='real')return error('合同模式无效');
+  const [demoOrder] = await (await getDb()).select({ demo: projects.demo }).from(orders).innerJoin(projects, eq(projects.id, orders.projectId)).where(eq(orders.id, orderId));
+  if (demoOrder?.demo === 1) {
+    if (mode === 'real') return error('演示项目仅支持演示合同');
+    mode = 'demo';
+  }
   const original=await selectedWorkflow.run(undefined,()=>getOrderWorkflow(orderId,actor));
   return selectedWorkflow.run({alternate:!!mode&&mode!==original.mode,mode:(mode||original.mode) as ContractMode},run);
 }
@@ -120,7 +125,7 @@ async function loadOrCreate(tx:Tx,id:number,actor:WorkflowActor):Promise<Workflo
       design:{...(design&&typeof design==='object'?design as Record<string,unknown>:{}),floorplan:result('floorplan'),plan:result('plan')},
     }};
   const [legacy]=await tx.select().from(contracts).where(eq(contracts.orderId,id));
-  const at=new Date().toISOString();const state=initializeWorkflow({orderId:id,projectId:project.id,homeownerId:owner.id,companyId:company.id,terms,...(legacy&&!selectedWorkflow.getStore()?.alternate?{legacyContent:legacy.content}:{})},at,selectedWorkflow.getStore()?.mode??getContractMode(process.env.CONTRACT_MODE));
+  const at=new Date().toISOString();const state=initializeWorkflow({orderId:id,projectId:project.id,homeownerId:owner.id,companyId:company.id,terms,...(legacy&&!selectedWorkflow.getStore()?.alternate?{legacyContent:legacy.content}:{})},at,project.demo === 1 ? 'demo' : selectedWorkflow.getStore()?.mode??getContractMode(process.env.CONTRACT_MODE));
   if(selectedWorkflow.getStore()?.alternate) { state.id+=`-${state.mode}`; state.versions[0].contractId+=`-${state.mode}`; }
   await tx.insert(contractWorkflows).values({orderId:id,projectId:project.id,revision:0,state:state as never,updatedAt:at});return state;
 }

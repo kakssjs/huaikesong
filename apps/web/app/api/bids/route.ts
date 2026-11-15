@@ -1,6 +1,6 @@
 import { refreshCompanyMembership } from '@/lib/company-payment';
 import { NextResponse } from 'next/server';
-import { createBid, listBidsByOrder, getOrder, getUser, getResult, listTasks, createTask, ensureCurrentLeadPeriod } from '@i-renovation/shared';
+import { createBid, listBidsByOrder, getOrder, getUser, getProject, getResult, listTasks, createTask, ensureCurrentLeadPeriod } from '@i-renovation/shared';
 import { canReceiveLead } from '@i-renovation/shared/membership';
 import { estimateContractServiceFee, wanToCny } from '@i-renovation/shared/commission';
 import { evaluateBidRisk } from '@i-renovation/shared/fair-bidding';
@@ -26,7 +26,7 @@ export async function POST(req: Request) {
     if (!Number.isFinite(orderId)) return NextResponse.json({ error: '缺少有效的 orderId' }, { status: 400 });
     if (!companyName) return NextResponse.json({ error: '缺少公司名称' }, { status: 400 });
     if (!Number.isFinite(Number(amount)) || Number(amount) <= 0 || !Number.isFinite(Number(weeks)) || Number(weeks) <= 0 || (body.estimatedCost !== undefined && (!Number.isFinite(Number(body.estimatedCost)) || Number(body.estimatedCost) < 0))) return NextResponse.json({ error: '报价、工期和成本必须是有效数字' }, { status: 400 });
-    if (me?.verified !== 1) return NextResponse.json({ error: '请先完成资质审核' }, { status: 403 });
+    if (me?.verified !== 1 && me?.demo !== 1) return NextResponse.json({ error: '请先完成资质审核' }, { status: 403 });
     if (!amount) return NextResponse.json({ error: '缺少报价金额' }, { status: 400 });
     if (!weeks) return NextResponse.json({ error: '缺少工期' }, { status: 400 });
     if (me?.membershipStatus !== 'active') {
@@ -40,6 +40,8 @@ export async function POST(req: Request) {
     // 只能给公开招标中的订单投标
     const target = await getOrder(orderId);
     if (!target) return NextResponse.json({ error: '订单不存在' }, { status: 404 });
+    const project = await getProject(target.projectId);
+    if ((me?.demo === 1) !== (project?.demo === 1)) return NextResponse.json({ error: '演示装修队与演示项目只能互相竞标' }, { status: 403 });
     if (target.status !== 'open') return NextResponse.json({ error: '该订单已不接受投标' }, { status: 409 });
     const existingBids = await listBidsByOrder(orderId);
     if (existingBids.some(b => b.companyId === companyId)) {

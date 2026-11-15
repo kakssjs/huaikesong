@@ -32,6 +32,19 @@ export default function MessagesCenter({ initialConversation }: { initialConvers
   const [hasOlder, setHasOlder] = useState(false);
   const [sending, setSending] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  async function draftReply() {
+    if (!conversation || !selectedId || drafts[selectedId]?.trim()) return;
+    const id = selectedId, epoch = requestEpoch.current;
+    setAiBusy(true); setSendError('');
+    try {
+      const response = await json<{ text: string }>('/api/company/assistant', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orderId: conversation.orderId, conversationId: id, question: '请根据最近业主消息，起草关于报价、材料或工期的回复。' }) });
+      if (currentId.current !== id || requestEpoch.current !== epoch) return;
+      setDrafts(old => old[id]?.trim() ? old : { ...old, [id]: response.text });
+      setDraftNotice('AI回复草稿已生成，请核对后点击发送；未自动发送。');
+    } catch (e) { if (currentId.current === id) setSendError(e instanceof Error ? e.message : 'AI草稿失败'); }
+    finally { setAiBusy(false); }
+  }
   const [draftNotice, setDraftNotice] = useState('草稿仅保存在本标签页，最长保留 24 小时');
   const [listError, setListError] = useState('');
   const [error, setError] = useState('');
@@ -218,6 +231,7 @@ export default function MessagesCenter({ initialConversation }: { initialConvers
             <form onSubmit={send} className="chat-composer">
               {conversation && !conversation.writable && <p role="status">承接关系已变更或订单已关闭，此会话仅可阅读。</p>}
               <label htmlFor="chat-draft">装修细节</label>
+              {conversation?.participantRole === 'company' && <button type="button" className="btn btn-ghost" style={{ marginBottom: 8 }} disabled={aiBusy || loading || !conversation.writable || !!draft.trim()} onClick={() => void draftReply()}>{aiBusy ? 'DeepSeek 正在起草…' : 'AI起草报价回复（审核后发送）'}</button>}
               <textarea id="chat-draft" rows={3} maxLength={2000} value={draft} disabled={!conversation?.writable || loading} placeholder="例如：厨房台面希望用石英石，能否确认材料型号和施工时间？" onChange={e => {
                 if(!selectedId||!conversation)return;
                 const text=e.target.value;setDrafts(old=>({...old,[selectedId]:text}));let saved=false;

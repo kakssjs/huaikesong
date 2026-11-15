@@ -159,11 +159,14 @@ export function isOrderParty(s: Session, order: OrderRow): boolean {
 /** 公司可查看订单：公开招标中、已被选定、或本公司投过标。 */
 export async function companyCanSeeOrder(s: Session, order: OrderRow): Promise<boolean> {
   if (s.role !== 'company') return false;
+  const [company, project] = await Promise.all([getUser(s.uid), getProject(order.projectId)]);
+  // 演示与真实互不可见：演示装修队只看演示项目，真实公司看不到演示项目；其余规则两边相同
+  if ((company?.demo === 1) !== (project?.demo === 1)) return false;
   if (order.companyId === s.uid) return true;
   const bids = await listBidsByOrder(order.id);
   if (bids.some(b => b.companyId === s.uid)) return true;
-  const company = await getUser(s.uid);
-  return order.status === 'open' && company?.verified === 1 && company.membershipStatus === 'active' &&
+  // 演示装修队不做真实资质审核，以演示身份代替 verified
+  return order.status === 'open' && !!company && (company.verified === 1 || company.demo === 1) && company.membershipStatus === 'active' &&
     !!company.membershipExpiresAt && Date.parse(company.membershipExpiresAt) > Date.now();
 }
 

@@ -358,3 +358,53 @@ test('verified contact email cannot be stolen by another account with the same u
   await assert.rejects(db.verifyUserContactEmail(b.id, email));
   await assert.rejects(db.verifyUserContactEmail(b.id, 'other@example.test'));
 });
+
+test('demo workspace creates isolated draft-only samples and cleanup preserves real accounts', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../apps/web/lib/demo-workspace.ts'), 'utf8');
+  const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
+  const mod = { exports: {} };
+  const shared = { ...db, ...require('./.regression/plan.js'), ...require('./.regression/price.js') };
+  const req = name => name === '@i-renovation/shared' ? shared : name === './auth' ? { hashPassword: value => 'test-hash-' + value.length } : require(name);
+  new Function('module', 'exports', 'require', compiled)(mod, mod.exports, req);
+  const original = await db.createUser({ name: 'keep-real', role: 'company' });
+  const demo = await mod.exports.createDemoWorkspace();
+  const [realPlan, demoPlan] = ['real', 'demo'].map(kind => path.join(dataDir, `uploaded-${kind}-plan.png`));
+  for (const file of [realPlan, demoPlan]) fs.writeFileSync(file, 'synthetic');
+  const realProject = await db.createProject({ name: 'keep-real-project', style: '现代简约', budget: '10', floorPlanPath: realPlan });
+  const realOrder = await db.createOrder({ projectId: realProject.id, homeownerId: original.id });
+  await assert.rejects(db.createBid({ orderId: realOrder.id, companyId: demo.companies[0].id, companyName: 'demo', amount: '10', weeks: '8' }), /演示/);
+  await assert.rejects(db.createBid({ orderId: demo.projects[0].orderId, companyId: original.id, companyName: 'real', amount: '10', weeks: '8' }), /演示/);
+  assert.equal(demo.companies.length, 3); assert.equal(demo.projects.length, 2); assert.equal(demo.credentials.length, 4);
+  for (const company of demo.companies) { const user = await db.getUser(company.id); assert.equal(user.demo, 1); assert.equal(user.verified, 0); }
+  for (const project of demo.projects) { assert.equal((await db.getProject(project.projectId)).demo, 1); assert.equal((await db.listBidsByOrder(project.orderId)).length, 0, 'no bid submitted without human confirmation'); }
+  await assert.rejects(mod.exports.createDemoWorkspace());
+  const inherited = await db.createProject({ homeownerId: (await db.getOrder(demo.projects[0].orderId)).homeownerId, name: 'additional', style: '现代简约', budget: '10', floorPlanPath: demoPlan });
+  assert.equal(inherited.demo, 1);
+  await mod.exports.cleanDemoWorkspace();
+  assert.equal(await db.getUser(demo.companies[0].id), null);
+  assert.equal(await db.getProject(inherited.id), null);
+  assert.equal(fs.existsSync(demoPlan), false, 'a floor plan uploaded by the demo owner is removed with its project');
+  assert.equal((await db.getUser(original.id)).name, 'keep-real');
+  assert.equal((await db.getProject(realProject.id)).name, 'keep-real-project');
+  assert.equal(fs.existsSync(realPlan), true, 'real uploads are untouched');
+});
+
+test('matcher ranks demo teams only on demo projects and never shows them as verified', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../apps/web/lib/runner.ts'), 'utf8');
+  const tree = ts.createSourceFile('runner.ts', source, ts.ScriptTarget.Latest, true);
+  const code = tree.statements.filter(n => ts.isFunctionDeclaration(n) && ['asArray', 'scoreCompany', 'scoreBid', 'matchBids'].includes(n.name?.text)).map(n => n.getText(tree)).join('\n');
+  const member = { membershipStatus: 'active', membershipExpiresAt: '2099-01-01T00:00:00.000Z' };
+  const deps = {
+    getOrderByProject: async () => ({ id: 1 }), getResult: async () => ({ content: { total: 100000 } }),
+    listBidsByOrder: async () => ['demo', 'pending', 'verified'].map((companyName, i) => ({ id: i + 1, orderId: 1, companyId: i + 1, companyName, amount: '10', weeks: '8' })),
+    listCompanies: async () => [{ id: 1, name: 'demo', verified: 0, demo: 1, ...member }, { id: 2, name: 'pending', verified: 0, demo: 0, ...member }, { id: 3, name: 'verified', verified: 1, demo: 0, ...member }],
+    getMembershipTier: require('./.regression/membership.js').getMembershipTier, evaluateBidRisk: require('./.regression/fair-bidding.js').evaluateBidRisk,
+  };
+  const matchBids = new Function(...Object.keys(deps), ts.transpileModule(code + '\nreturn matchBids;', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(...Object.values(deps));
+  assert.deepEqual((await matchBids(1, '现代简约')).contractors.map(c => c.name), ['verified'], 'a real project never ranks a demo or unreviewed team');
+  const team = (await matchBids(1, '现代简约', true)).contractors.find(c => c.name === 'demo');
+  assert.ok(team, 'a demo project ranks its demo team');
+  assert.equal(team.verified, false);
+  assert.match(team.reason, /演示装修队，未经真实资质审核/);
+  assert.equal((await matchBids(1, '现代简约', true)).contractors.some(c => c.name === 'pending'), false, 'an unreviewed real company stays excluded');
+});

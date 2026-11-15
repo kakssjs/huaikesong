@@ -29,7 +29,7 @@ const STAGES: { key: string; label: string }[] = [
 ];
 
 interface ProjectData {
-  project: { id: number; name: string; style: string; area?: string; budget: string; stage: number; needs?: string } & ProjectPlace;
+  project: { id: number; name: string; style: string; area?: string; budget: string; stage: number; needs?: string; demo?: number } & ProjectPlace;
   results: { kind: string; content: Record<string, unknown> }[];
   tasks: {
     id: number; toAgent: string; fromAgent: string; status: string; createdAt: string;
@@ -521,7 +521,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const latestTasks = tasks.filter(t => !tasks.some(other => other.toAgent === t.toAgent && other.id > t.id));
   const workspace = buildProjectWorkspace({ delivery, tasks, order, bids, orderFlow, confirmedTaskId: decision?.deliveryTaskId ?? null });
   const { waitingTasks, escalatedTasks } = workspace;
-  const activeTab = workspaceTab ?? workspace.primary.tab;
+  // 后台一键创建的演示样例直接进入竞标环节（没有跑设计流水线），打开时先看报价与匹配
+  const demoSample = data.project.demo === 1 && byKind('plan')?.source === 'demo';
+  const activeTab = workspaceTab ?? (demoSample ? 'match' : workspace.primary.tab);
 
   const recommended = match?.contractors?.[0];
 
@@ -610,6 +612,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
   return (
     <main className="container project-workspace-page" style={{ paddingTop: 32 }}>
+      {data.project.demo === 1 && <p className="notice notice-warn">{demoSample
+        ? '演示样例：合成户型与报价由后台直接创建，仅用于体验竞标和沟通；没有运行设计流水线，设计岗位显示“待开始”属正常，装修队报价与匹配见「匹配与沟通」。不代表真实客户、完整设计交付或真实施工资质，仅支持演示合同。'
+        : '演示项目：由演示业主账号创建，只有演示装修队可以竞标，不代表真实客户或真实施工资质。仅支持演示合同。'}</p>}
       {/* 项目视觉头部：背景只用本项目已生成的效果图，没有就用纯色，不用配图冒充 */}
       <section
         className="project-masthead"
@@ -1296,8 +1301,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                   <span className="tag tag-orange">{c.score != null ? `匹配度 ${c.score}%` : '未评分'}</span>
                 </div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '8px 0' }}>
-                  <span className={`tag ${c.verified ? 'tag-green' : 'tag-cyan'}`}>{c.verified ? '✓ 资质已人工审核' : '◌ 资质待审核'}</span>
-                  <span className="tag tag-purple">{getMembershipTier(c.membershipTier).badge}</span>
+                  <span className={`tag ${c.verified ? 'tag-green' : 'tag-cyan'}`}>{c.verified ? '✓ 资质已人工审核' : data.project.demo === 1 ? '演示装修队 · 未做资质认证' : '◌ 资质待审核'}</span>
+                  {/* 会员档位徽标写着“认证施工队”，演示装修队没有做认证，不显示 */}
+                  {data.project.demo !== 1 && <span className="tag tag-purple">{getMembershipTier(c.membershipTier).badge}</span>}
                   {c.amount != null && c.weeks != null && <span className="tag tag-orange">投标 {c.amount} 万元 · {c.weeks} 周</span>}
                   {c.types?.map(t => <span key={t} className="tag tag-purple">{t}</span>)}
                   {c.districts?.map(d => <span key={d} className="tag tag-cyan">📍{d}</span>)}

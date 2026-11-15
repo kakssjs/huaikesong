@@ -30,7 +30,7 @@ interface CompanyRow {
   id: number; name: string; companyName?: string | null; license?: string | null;
   qualifications?: unknown; districts?: unknown; serviceTypes?: unknown; specialties?: unknown;
   membershipExpiresAt?: string | null; verified: number; companyScale?: string | null; membershipTier?: string | null; membershipStatus?: string | null;
-  monthlyLeadQuota?: number | null; monthlyLeadsUsed?: number | null;
+  monthlyLeadQuota?: number | null; monthlyLeadsUsed?: number | null; demo?: number | null;
 }
 
 function scoreCompany(c: CompanyRow, style: string) {
@@ -40,6 +40,7 @@ function scoreCompany(c: CompanyRow, style: string) {
   let score = 0;
   const reasons: string[] = [];
   if (c.verified === 1) { score += 30; reasons.push('资质已通过人工审核'); }
+  else if (c.demo === 1) { score += 6; reasons.push('演示装修队，未经真实资质审核'); }
   else { score += 6; reasons.push('资质已提交，待人工审核'); }
   if (specialties.some(s => s.includes(style) || style.includes(s))) { score += 25; reasons.push(`${style} 风格专长`); }
   if (types.length) { score += 15; reasons.push(`承接 ${types.slice(0, 3).join(' / ')}`); }
@@ -95,7 +96,7 @@ interface MatchedContractor {
 }
 
 // —— 匹配智能体数据源：装修公司真实投标（发布数据）+ 公司资质档案；无投标不出匹配 ——
-async function matchBids(projectId: number, style: string) {
+async function matchBids(projectId: number, style: string, demoProject = false) {
   const order = await getOrderByProject(projectId);
   const bids = (order ? await listBidsByOrder(order.id) : []) as BidRow[];
   const empty: MatchedContractor[] = [];
@@ -106,7 +107,8 @@ async function matchBids(projectId: number, style: string) {
   const byId = new Map(companies.map(c => [c.id, c]));
   const eligibleBids = bids.filter(b => {
     const c = byId.get(b.companyId);
-    return c && c.verified === 1 && c.membershipStatus === 'active' && !!c.membershipExpiresAt && Date.parse(c.membershipExpiresAt) > Date.now();
+    // 演示项目上的演示装修队不做真实资质审核，仍参与匹配；真实项目只认已审核的公司
+    return c && (c.verified === 1 || (demoProject && c.demo === 1)) && c.membershipStatus === 'active' && !!c.membershipExpiresAt && Date.parse(c.membershipExpiresAt) > Date.now();
   });
   const contractors: MatchedContractor[] = eligibleBids
     .map(b => {
@@ -134,13 +136,13 @@ async function matchBids(projectId: number, style: string) {
  * 模型只能在这批真实投标和真实商品里选，返回的 id 不在名单里就丢弃。模型不可用时返回 null，由规则分兜底。
  */
 async function llmMatch(
-  project: { name: string; style: string; area?: string | null; budget: string; needs?: string | null },
+  project: { name: string; style: string; area?: string | null; budget: string; needs?: string | null; demo?: number | null },
   rooms: PlanRoom[], quoteTotal: number, bids: BidRow[], contractors: MatchedContractor[],
 ) {
   const bidById = new Map(bids.map(b => [b.id, b]));
   const catalog = XIAOMI_SMART_HOME_PRODUCTS.map(p => ({ id: p.id, name: p.name, category: p.category, rooms: p.roomTags }));
   const prompt = [
-    '你是装修平台的匹配智能体「小桥」。根据业主的装修需求，给下面这些已通过审核的装修队投标排序，并为各房间挑选相关的智能家居产品。',
+    `你是装修平台的匹配智能体「小桥」。根据业主的装修需求，给下面这些${project.demo === 1 ? '演示装修队（临时演示账号，未经真实资质审核，理由里不要写已审核或已认证）' : '已通过审核的装修队'}投标排序，并为各房间挑选相关的智能家居产品。`,
     '只返回严格 JSON，不要 markdown、不要解释：',
     '{"ranking":[{"bidId":1,"score":0-100,"reason":"一句中文理由，引用需求、风格、报价、工期或公司特长中的具体事实"}],"products":[{"id":"商品id","room":"房间名","reason":"一句中文理由"}],"summary":"一两句中文，说明推荐的依据"}',
     '规则：ranking 必须包含且只包含下面列出的每个 bidId；不要编造公司、价格或资质；报价明显低于测算（低价风险）要降分；products 最多 8 个，只能用目录里的 id，选与业主需求和房间相关的；reason 和 summary 里用公司名称称呼装修队，不要写 bidId 或编号。',
@@ -337,7 +339,7 @@ async function runAgent(task: { id: number; projectId: number; toAgent: string; 
     }
     case 'matcher': {
       // —— 匹配智能体：等「业主确认发布 + 装修公司发布数据（投标）」后触发，基于真实投标数据匹配 ——
-      const { order, bids, contractors: ruleRanked } = await matchBids(task.projectId, project.style);
+      const { order, bids, contractors: ruleRanked } = await matchBids(task.projectId, project.style, project.demo === 1);
       // 第二智能体：大模型在规则筛出的真实投标里排序并写理由，同时挑选相关商品；失败时沿用规则分
       const planRow = await getResult(task.projectId, 'plan');
       const rooms = (planRow?.content as { rooms?: PlanRoom[] } | undefined)?.rooms ?? [];

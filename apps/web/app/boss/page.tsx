@@ -1,6 +1,7 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
 import ContractWorkbenchDialog from '../components/ContractWorkbenchDialog';
+import DemoWorkspace from '../components/DemoWorkspace';
 import { formatBeijing, paymentStatusLabel, refundStatusText, type LedgerRow, type LedgerSummary } from '@/lib/payment-labels';
 
 interface TaskRecord {
@@ -474,6 +475,7 @@ export default function BossConsole() {
       {/* ---------- 用户管理 ---------- */}
       {tab === 'users' && (
         <>
+          <DemoWorkspace />
           <p style={{ color: 'var(--text-dim)', fontSize: 12, marginBottom: 14 }}>
             注销会永久删除账号：业主的项目、订单、合同与户型图一并删除；装修公司的投标一并删除，已被选为施工方的公司不能注销。入驻费付款记录保留。
           </p>

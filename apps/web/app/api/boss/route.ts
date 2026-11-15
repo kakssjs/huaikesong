@@ -97,7 +97,8 @@ export async function GET(req: Request) {
         action: '裁决：重跑 / 降级交付 / 通知业主',
       });
     }
-    for (const c of companies.filter(x => x.verified === 0)) {
+    // 演示装修队不进入真实资质审核队列
+    for (const c of companies.filter(x => x.verified === 0 && x.demo !== 1)) {
       approvals.push({
         id: `user_${c.id}`, type: '装修队资质审核', level: '中',
         subject: c.name + (c.companyName ? `（${c.companyName}）` : ''),

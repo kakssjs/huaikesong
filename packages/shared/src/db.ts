@@ -13,6 +13,7 @@ import { PRICE_REFERENCES, type PriceReference } from './price';
 
 export const projects = pgTable('projects', {
   id: serial('id').primaryKey(),
+  demo: integer('demo').notNull().default(0),
   homeownerId: integer('homeowner_id'),
   name: text('name').notNull(),
   style: text('style').notNull(),
@@ -66,6 +67,7 @@ export interface TaskRecord {
 
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
+  demo: integer('demo').notNull().default(0),
   role: text('role').notNull(),
   name: text('name').notNull(),
   phone: text('phone'),
@@ -271,6 +273,8 @@ CREATE TABLE IF NOT EXISTS users (
   verified integer NOT NULL DEFAULT 0, created_at text NOT NULL
 );
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS province text;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS demo integer NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS demo integer NOT NULL DEFAULT 0;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS city text;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS district text;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS community text;
@@ -410,7 +414,8 @@ export async function createProject(p: {
       const [existing] = await tx.select().from(projects).where(and(eq(projects.homeownerId, p.homeownerId), eq(projects.requestKey, p.requestKey)));
       if (existing) return existing;
     }
-    const [row] = await tx.insert(projects).values({ ...p, stage: 1, createdAt: now() }).returning();
+    const [owner] = p.homeownerId ? await tx.select({ demo: users.demo }).from(users).where(eq(users.id, p.homeownerId)) : [];
+    const [row] = await tx.insert(projects).values({ ...p, demo: owner?.demo === 1 ? 1 : 0, name: owner?.demo === 1 ? `【演示】${p.name}` : p.name, stage: 1, createdAt: now() }).returning();
     await tx.insert(tasks).values({ projectId: row.id, fromAgent: 'orchestrator', toAgent: 'floor_plan',
       input: { projectId: row.id }, status: 'pending', createdAt: now(), updatedAt: now() });
     return row;
@@ -913,7 +918,10 @@ export async function selectOrderCompany(id: number, companyId: number) {
     if (!order || !['open', 'matched'].includes(order.status)) throw new Error('当前状态不能更换装修队');
     const [bid] = await tx.select().from(bids).where(and(eq(bids.orderId, id), eq(bids.companyId, companyId)));
     const [company] = await tx.select().from(users).where(eq(users.id, companyId));
-    if (!bid || !company || company.verified !== 1 || company.membershipStatus !== 'active' ||
+    const [project] = await tx.select({ demo: projects.demo }).from(projects).where(eq(projects.id, order.projectId));
+    const demoMatch = project?.demo === 1 && company?.demo === 1;
+    if ((project?.demo === 1) !== (company?.demo === 1)) throw new Error('演示项目不能选定真实公司，真实项目不能选定演示公司');
+    if (!bid || !company || (!demoMatch && company.verified !== 1) || company.membershipStatus !== 'active' ||
         !company.membershipExpiresAt || Date.parse(company.membershipExpiresAt) <= Date.now()) throw new Error('请选择已审核且有有效会员的真实投标公司');
     await tx.update(bids).set({ status: 'rejected' }).where(eq(bids.orderId, id));
     await tx.update(bids).set({ status: 'accepted' }).where(eq(bids.id, bid.id));
@@ -952,7 +960,9 @@ export async function createBid(b: {
     const [order] = await tx.select().from(orders).where(eq(orders.id, b.orderId));
     const [company] = await tx.select().from(users).where(eq(users.id, b.companyId));
     if (!order || order.status !== 'open') throw new Error('订单不接受投标');
-    if (!company || company.role !== 'company' || company.verified !== 1) throw new Error('请先完成资质审核');
+    const [project] = await tx.select({ demo: projects.demo }).from(projects).where(eq(projects.id, order.projectId));
+    if ((project?.demo === 1) !== (company?.demo === 1)) throw new Error('演示装修队与演示项目只能互相竞标');
+    if (!company || company.role !== 'company' || (company.verified !== 1 && !(company.demo === 1 && project?.demo === 1))) throw new Error('请先完成资质审核');
     if (company.membershipStatus !== 'active' || !company.membershipExpiresAt || Date.parse(company.membershipExpiresAt) <= Date.now()) throw new Error('请先开通有效会员');
     const [existing] = await tx.select().from(bids).where(and(eq(bids.orderId, b.orderId), eq(bids.companyId, b.companyId)));
     if (existing) throw new Error('同一项目不能重复投标');

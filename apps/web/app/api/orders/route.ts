@@ -51,10 +51,17 @@ export async function GET(req: Request) {
       if (s.role === 'homeowner') return forbidden();
       if (s.role === 'company') {
         const company = await getUser(s.uid);
+        if (company?.demo === 1) {
+          const demoOrders = [];
+          for (const order of await listOpenOrders()) if ((await getProject(order.projectId))?.demo === 1) demoOrders.push(order);
+          return NextResponse.json(demoOrders);
+        }
         if (company?.verified !== 1) return NextResponse.json({ error: '请先完成企业资质审核' }, { status: 403 });
         if (company.membershipStatus !== 'active' || !company.membershipExpiresAt || Date.parse(company.membershipExpiresAt) <= Date.now()) return NextResponse.json({ error: '开通有效企业会员后可查看接单市场' }, { status: 402 });
       }
-      return NextResponse.json(await listOpenOrders());
+      const visible = [];
+      for (const order of await listOpenOrders()) if (s.role === 'boss' || (await getProject(order.projectId))?.demo !== 1) visible.push(order);
+      return NextResponse.json(visible);
     }
     return NextResponse.json({ error: '请指定 role=homeowner|company 或 status=open' }, { status: 400 });
   } catch (e: any) {

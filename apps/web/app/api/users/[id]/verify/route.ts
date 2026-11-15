@@ -12,6 +12,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const user = await getUser(id);
     if (!user) return NextResponse.json({ error: '用户不存在' }, { status: 404 });
     if (user.role !== 'company') return NextResponse.json({ error: '仅装潢公司有资质状态' }, { status: 403 });
+    if (user.demo === 1) return NextResponse.json({ error: '演示装修队不参与真实资质审核' }, { status: 403 });
 
     const body = (await req.json()) as { action?: string };
     if (body.action !== 'approve' && body.action !== 'reject') {

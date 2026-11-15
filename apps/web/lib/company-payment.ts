@@ -4,6 +4,7 @@ import { payRequest, entitlement, basicSku, purchaseLinks, membershipIdentity, m
 export async function refreshCompanyMembership(companyId: number) {
   const company = await getUser(companyId);
   if (!company || company.role !== 'company') throw new Error('仅企业装修队可购买会员');
+  if (company.demo === 1) return { active: true, expiresAt: company.membershipExpiresAt, demo: true };
   const data = await payRequest('/access', { user_id: membershipIdentity('company', companyId) });
   const expires = entitlement(data);
   await setCompanyMembership(companyId, {
@@ -20,6 +21,7 @@ export async function refreshCompanyMembership(companyId: number) {
 }
 
 export async function companyCheckout(companyId: number) {
+  if ((await getUser(companyId))?.demo === 1) throw new Error('演示账号不支持真实付款');
   const callbackUrl = membershipReturnUrl();
   const capabilities = await payRequest('/capabilities');
   if (capabilities.provider_configured !== true || capabilities.capabilities?.purchase_entry !== true || capabilities.capabilities?.entitlement_query !== true) {

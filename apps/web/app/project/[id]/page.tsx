@@ -14,6 +14,7 @@ import ProjectLocation, { type ProjectPlace } from '../../components/ProjectLoca
 import ContractWorkbench from '../../components/ContractWorkbench';
 import ProjectChatButton from '../../components/ProjectChatButton';
 import DeliveryEvidence, { DELIVERY_LABEL } from '../../components/DeliveryEvidence';
+import { PlanBuildLoader } from '../../components/PlanStory';
 import { buildDeliveryReport } from '@i-renovation/shared/delivery';
 
 const Scene3D = lazy(() => import('../../components/Scene3D'));
@@ -478,6 +479,10 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     ? buildSceneModel(customGeom, customGeom.rooms, data.project.style, { source: 'floor_plan' })
     : savedSceneModel;
   const materialPrompt = activeSceneModel ? describeMaterialPreset(activeSceneModel.materialPreset) : '';
+  // 3D 视图与 Agnes 生成效果图时的户型搭建动画用同一份几何：选了"按我的户型图"用业主户型，否则用 Agent 的
+  const useUserGeom = fpSource === 'user' && !!customGeom;
+  const viewGeom = useUserGeom ? customGeom : (plan?.geometry ?? null);
+  const viewRooms = useUserGeom ? customGeom!.rooms : (plan?.rooms || []);
   // 页头与「设计意向」只用本项目自己的资料：三维模型实际使用的材质方案、Agnes 为本项目生成的效果图
   const activePreset = activeSceneModel?.materialPreset;
   const projectShots = projectRenders(results);
@@ -876,8 +881,18 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
               );
             })}
           </div>
-          {/* 当前房间装饰图 */}
-          {(() => {
+          {/* 当前房间装饰图；Agnes 生成期间改为播放本项目户型的搭建动画 */}
+          {genRoomsBusy || chatBusy ? (
+            <PlanBuildLoader
+              geometry={viewGeom}
+              rooms={viewRooms}
+              presetId={activeSceneModel?.materialPresetId as MaterialPresetId | undefined}
+              title={genRoomsBusy ? 'Agnes 正在生成空间效果图' : 'Agnes 正在重新生成效果图'}
+              room={genRoomsBusy ? undefined : decorations[selectedIdx]?.room}
+              progress={genRoomsBusy ? genRoomsProgress : undefined}
+              detail="等待时，先看看同一份户型数据搭出的 3D 空间"
+            />
+          ) : (() => {
             const cur = decorations[selectedIdx];
             if (!cur) return null;
             return (
@@ -1001,9 +1016,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
       {/* 3D 视图 */}
       {(customGeom || (plan?.rooms && plan.rooms.length > 0)) && (() => {
-        const useUser = fpSource === 'user' && customGeom;
-        const effGeom = useUser ? customGeom : (plan?.geometry ?? null);
-        const effRooms = useUser ? customGeom!.rooms : (plan?.rooms || []);
+        const useUser = useUserGeom;
+        const effGeom = viewGeom;
+        const effRooms = viewRooms;
         const effWarnings = useUser ? customGeom!.warnings : (plan?.warnings ?? []);
         return (
           <section className="panel" style={{ marginTop: 18 }}>

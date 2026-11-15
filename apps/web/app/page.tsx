@@ -1,6 +1,7 @@
 'use client';
 
 import LeadHero, { openAuth } from './components/LeadHero';
+import PlanStory from './components/PlanStory';
 import { AGENTS } from '@/lib/agents';
 
 const TEAM = [
@@ -57,6 +58,8 @@ export default function Home() {
         <h2>一支 AI 团队，协作完成装修方案与交付</h2>
         <p className="lead">从需求与调度、户型识别、设计和 3D，到报价、质检、施工方匹配，再衔接签约与履约。专项智能体分工接力，关键方案、价格、签署和验收由人确认。</p>
       </section>
+
+      <PlanStory />
 
       <section className="home-section home-team" id="agent-team" aria-labelledby="agent-team-title">
         <p className="editorial-kicker">THE AI TEAM</p>

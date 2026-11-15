@@ -137,7 +137,9 @@ function addOpeningDetails(
   addCylinder(group, 0.035, 0.12, [handleX, 1.05, handleZ], handleMat, 16);
 }
 
-function makeMaterials(preset: ReturnType<typeof getMaterialPreset>) {
+// makeMaterials, addWall and addFurniture are also used by the plan story (lib/plan-story-scene.ts),
+// so the home page and the Agnes waiting animation show the same walls, openings and furniture.
+export function makeMaterials(preset: ReturnType<typeof getMaterialPreset>) {
   return {
     wall: preset.wall,
     exteriorWall: preset.exteriorWall,
@@ -155,7 +157,7 @@ function makeMaterials(preset: ReturnType<typeof getMaterialPreset>) {
   };
 }
 
-function addWall(scene: THREE.Scene, wall: Wall, group: THREE.Group, materials: ReturnType<typeof makeMaterials>) {
+export function addWall(scene: THREE.Scene, wall: Wall, group: THREE.Group, materials: ReturnType<typeof makeMaterials>) {
   const L = Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1);
   if (L < 0.05) return;
   const horizontal = Math.abs(wall.y2 - wall.y1) < 1e-6;
@@ -219,7 +221,7 @@ function addRoundedBox(
   return mesh;
 }
 
-function addFurniture(group: THREE.Group, room: RoomGeom, materials: ReturnType<typeof makeMaterials>) {
+export function addFurniture(group: THREE.Group, room: RoomGeom, materials: ReturnType<typeof makeMaterials>) {
   const centerX = room.x + room.w / 2;
   const centerZ = room.y + room.d / 2;
   const minSide = Math.min(room.w, room.d);

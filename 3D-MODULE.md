@@ -47,6 +47,10 @@ interface SceneModel {
 5. QA Agent
    - 校验 `scene_model` 是否包含有效几何、材质预设和房间模型。
 
+6. 首页「户型成形」与 Agnes 等待动画（`components/PlanStory.tsx` + `lib/plan-story-scene.ts`）
+   - 同一份 `PlanGeometry` 先画成二维图（SVG），再由 `Scene3D` 导出的 `addWall` / `addFurniture` / `makeMaterials` 拉伸成 3D，所以墙、门窗与家具和项目页一致；改这些函数时两处一起生效。
+   - 首页随滚动推进（示意户型）；项目页在 Agnes 生成效果图期间自动循环播放本项目户型。three.js 只在需要时按需加载；减少动态效果时直接显示完成状态，无 WebGL 时保留二维图。
+
 ## Blender Cycles 导出
 
 Scene3D 的“导出 Blender / Pascal”按钮会下载：

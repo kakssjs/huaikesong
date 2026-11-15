@@ -780,6 +780,124 @@ input[type="file"].form-input { padding: 10px; cursor: pointer; }
   .landing-intro img { transform: none; }
 }
 
+/* =============================================
+   首页 · 户型成形（components/PlanStory.tsx）：识别 → 二维施工图 → 同源 3D → 家具与动线，随滚动推进。
+   同一舞台在 Agnes 生成效果图时自动播放（.plan-loader）。开场与两段视频不受影响。
+   ============================================= */
+.plan-story { --plan-top: 64px; border-top: 1px solid var(--border); }
+.plan-story-head { padding: 5.5rem 1.5rem 1.5rem; }
+.plan-story-head h2 { max-width: 38rem; }
+.plan-story-head .lead { max-width: 40rem; margin: 1rem 0 0; color: var(--text-dim); font-size: 15px; line-height: 1.9; }
+.plan-story-track { position: relative; height: 340vh; }
+.plan-story-pin {
+  position: sticky; top: var(--plan-top);
+  height: calc(100vh - var(--plan-top)); height: calc(100svh - var(--plan-top));
+  max-width: 1200px; margin: 0 auto; padding: 1.25rem 1.5rem 1.5rem;
+  display: grid; grid-template-columns: minmax(230px, 300px) minmax(0, 1fr); gap: clamp(1.5rem, 4vw, 3.5rem); align-items: center;
+}
+.plan-story-steps { list-style: none; margin: 0; padding: 0; }
+.plan-story-steps li {
+  position: relative; display: grid; grid-template-columns: 2.6rem minmax(0, 1fr);
+  padding: 1.05rem 0 1.15rem; border-top: 1px solid var(--border-strong); color: var(--text-dim); transition: color .3s;
+}
+.plan-story-steps li:last-child { border-bottom: 1px solid var(--border-strong); }
+.plan-story-steps li.is-active, .plan-story-steps li.is-done { color: var(--text); }
+.plan-story-rail { position: absolute; left: 0; right: 0; top: -1px; height: 1px; overflow: hidden; }
+.plan-story-rail b { display: block; height: 100%; background: var(--accent); transform: scaleX(0); transform-origin: left; }
+.plan-story-no { font: italic 1.2rem/1.5 var(--font-serif); color: var(--accent2); }
+.plan-story-steps strong { display: block; font-size: 16px; font-weight: 500; letter-spacing: .02em; }
+.plan-story-steps p {
+  margin: 0; max-height: 0; opacity: 0; overflow: hidden; font-size: 13px; line-height: 1.85; color: var(--text-dim);
+  transition: max-height .45s ease, opacity .35s ease, margin .45s ease;
+}
+.plan-story-steps li.is-active p { max-height: 7rem; opacity: 1; margin-top: .45rem; }
+.plan-story-visual { align-self: stretch; display: flex; flex-direction: column; gap: .6rem; min-height: 0; }
+.plan-story-stage { flex: 1; min-height: 0; }
+.plan-story-caption { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .9rem; margin: 0; font-size: 11.5px; color: var(--text-dim); }
+.plan-story-caption > span:first-child { color: var(--accent2); letter-spacing: .12em; }
+.plan-story-note { margin-left: auto; }
+.plan-story[data-mode='still'] .plan-story-track { height: auto; }
+.plan-story[data-mode='still'] .plan-story-pin { position: relative; top: auto; height: auto; padding-bottom: 4rem; }
+.plan-story[data-mode='still'] .plan-story-stage { flex: none; height: min(68vh, 560px); }
+.plan-story[data-mode='still'] .plan-story-steps li { color: var(--text); }
+.plan-story[data-mode='still'] .plan-story-steps p { max-height: none; opacity: 1; margin-top: .45rem; }
+.plan-story[data-mode='still'] .plan-story-rail { display: none; }
+
+/* The stage: 3D canvas, SVG drawing and labels share one top-down fit. */
+.plan-stage { position: relative; overflow: hidden; }
+.plan-stage-canvas, .plan-stage-drawing, .plan-stage-labels { position: absolute; inset: 0; width: 100%; height: 100%; }
+.plan-stage-canvas { opacity: 0; transition: opacity .25s linear; }
+.plan-stage-canvas canvas { display: block; width: 100%; height: 100%; }
+.plan-stage-drawing { overflow: visible; }
+.plan-stage-drawing .sheet { fill: #fbfaf8; stroke: #dfe3e5; stroke-width: .02; }
+.plan-stage-drawing .grid-line { fill: none; stroke: #e8eaeb; stroke-width: .012; }
+.plan-stage-drawing .scan line { stroke: var(--accent2); stroke-width: .03; }
+.plan-stage-drawing .walls path { fill: none; stroke: #2f3437; stroke-dasharray: 1 1; }
+.plan-stage-drawing .openings rect { fill: #fbfaf8; stroke: #5d7684; stroke-width: .022; }
+.plan-stage-drawing .openings line { stroke: #5d7684; stroke-width: .022; }
+.plan-stage-drawing .openings .leaf { fill: none; stroke: var(--accent2); stroke-width: .03; }
+.plan-stage-drawing .openings .swing { fill: none; stroke: var(--accent2); stroke-width: .02; stroke-dasharray: .09 .07; }
+.plan-stage-drawing .dims path { fill: none; stroke: #9aa1a6; stroke-width: .016; }
+.plan-stage-drawing .dims .tick { stroke: #5f666b; stroke-width: .03; }
+.plan-stage-labels { pointer-events: none; }
+.plan-stage-label {
+  --chip: 0; position: absolute; left: 0; top: 0; isolation: isolate;
+  display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 4px 10px;
+  color: var(--text); white-space: nowrap; opacity: 0; will-change: transform, opacity;
+}
+.plan-stage-label::before {
+  content: ''; position: absolute; inset: 0; z-index: -1; border-radius: 999px; opacity: var(--chip);
+  background: rgba(255, 255, 255, .88); border: 1px solid var(--hairline); box-shadow: 0 6px 18px rgba(37, 42, 46, .1);
+}
+.plan-stage-label b { font: 400 14px/1.25 var(--font-serif); letter-spacing: .06em; }
+.plan-stage-label small { font-size: 10.5px; line-height: 1.2; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.plan-stage-tag b { font: 500 11px/1.3 system-ui, sans-serif; letter-spacing: .18em; color: var(--accent2); }
+.plan-stage-dim { position: absolute; left: 0; top: 0; font-size: 11px; letter-spacing: .08em; color: #6d757a; white-space: nowrap; opacity: 0; font-variant-numeric: tabular-nums; }
+
+/* Waiting animation in the project page while Agnes generates renders. */
+.plan-loader {
+  display: flex; flex-direction: column; height: clamp(320px, 46vw, 420px); border-radius: 12px; overflow: hidden;
+  border: 1px solid var(--border-strong); background: radial-gradient(circle at 50% 38%, #fff, var(--paper-2) 72%);
+}
+.plan-loader-stage { flex: 1; min-height: 0; }
+.plan-loader-caption {
+  display: flex; align-items: center; gap: 12px; margin: auto 12px 12px;
+  padding: 10px 14px; border-radius: 10px; background: rgba(255, 255, 255, .9); border: 1px solid var(--hairline);
+}
+.plan-loader-pulse { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--accent2); animation: pulse 1.4s ease-in-out infinite; }
+.plan-loader-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.plan-loader-text strong { font-size: 13px; font-weight: 500; }
+.plan-loader-text small { font-size: 11.5px; color: var(--text-dim); }
+.plan-loader-count { font-variant-numeric: tabular-nums; color: var(--accent); }
+.plan-loader .brief-bar { flex: 0 0 120px; margin-top: 0; }
+
+@media (max-width: 760px) {
+  .plan-story-head { padding: 3.5rem 1rem .5rem; }
+  .plan-story-track { height: 300vh; }
+  .plan-story-pin {
+    grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto;
+    gap: .25rem; padding: .5rem 1rem .9rem; align-items: stretch;
+  }
+  .plan-story-visual { order: -1; }
+  .plan-story-steps li { display: none; padding: .7rem 0 0; }
+  .plan-story-steps li:last-child { border-bottom: 0; }
+  .plan-story-steps li.is-active { display: grid; }
+  .plan-story-steps p { max-height: none; opacity: 1; margin-top: .3rem; }
+  .plan-story-note { margin-left: 0; }
+  .plan-story[data-mode='still'] .plan-story-steps li { display: grid; }
+  .plan-story[data-mode='still'] .plan-story-stage { height: 62vh; }
+  .plan-stage-label { padding: 3px 8px; }
+  .plan-stage-label b { font-size: 12px; }
+  .plan-stage-label small { font-size: 9.5px; }
+  .plan-loader { height: 380px; }
+  .plan-loader .brief-bar { display: none; }
+  .plan-loader .plan-stage-label small { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plan-stage-canvas, .plan-story-steps li, .plan-story-steps p { transition: none; }
+  .plan-loader-pulse { animation: none; }
+}
+
 /* Role-specific consoles: homeowner and contractor. Homepage styles remain unchanged. */
 .role-hero {
   position: relative;

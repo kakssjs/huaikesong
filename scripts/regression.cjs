@@ -27,17 +27,19 @@ test('project execution footer distinguishes running, review-ready and incomplet
     ts.forEachChild(node, visit);
   }
   visit(tree);
-  const footer = new Function('tasks', 'delivery', 'waitingTasks', 'escalatedTasks', `return (${expression})`);
+  const footer = new Function('latestTasks', 'delivery', 'waitingTasks', 'escalatedTasks', `return (${expression})`);
   assert.match(footer([{ status: 'running' }], { readyForReview: false }, [], []), /生成中/);
   assert.match(footer([{ status: 'done' }], { readyForReview: false }, [], []), /待修正/);
   assert.match(footer([{ status: 'done' }], { readyForReview: true }, [], []), /待.*确认/);
   assert.match(footer([], {}, [{}], []), /补充户型/);
   assert.match(footer([], {}, [], [{}]), /人工处理/);
-  const label = new Function('order', 'delivery', 'data', `return (${phase})`);
-  assert.equal(label(null, { readyForReview: false }, { project: { stage: 3 } }), '方案待复核');
-  assert.equal(label(null, { readyForReview: true }, { project: { stage: 3 } }), '待业主确认');
-  assert.equal(label({}, {}, {}), '施工匹配');
-  assert.equal(label(null, {}, { project: { stage: 1 } }), '方案设计');
+  const label = new Function('workspace', `return (${phase})`);
+  assert.equal(label({ current: 'estimate' }), '报价与质检');
+  assert.equal(label({ current: 'review' }), '待业主确认');
+  assert.equal(label({ current: 'match' }), '施工匹配');
+  assert.equal(label({ current: 'communicate' }), '双方沟通');
+  assert.equal(label({ current: 'fulfil' }), '签约与履约');
+  assert.equal(label({ current: 'design' }), '方案设计');
 });
 
 test('authentication changes reload the destination even when it is the current route', async () => {

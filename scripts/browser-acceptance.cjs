@@ -151,11 +151,36 @@ async function run() {
       await page.reload({ waitUntil: 'networkidle' });
       await page.getByText(projectName, { exact: false }).first().waitFor();
       step.createAndReload = true;
+      await page.getByRole('heading', { name: '装修项目工作台', exact: true }).waitFor();
+      assert.equal(await page.getByRole('tab', { name: '需求与户型', exact: true }).getAttribute('aria-selected'), 'true');
+      await page.getByRole('tab', { name: '匹配与沟通', exact: true }).click();
+      await page.getByText('业主选定承接装修公司后，这里会开放本项目的私密沟通入口。', { exact: true }).waitFor();
+      assert.equal(await page.getByRole('button', { name: '沟通装修细节', exact: true }).count(), 0);
+      step.unselectedChatLocked = true;
 
       // 带完整成果的合成项目：交付面板、3D 视角、导出、交付 JSON 下载
       await page.goto(`${base}/project/${projectId}`, { waitUntil: 'networkidle' });
       await page.getByRole('heading', { name: '本轮交付与人工复核' }).waitFor();
       step.deliveryPanel = true;
+      assert.equal(await page.getByRole('tab', { name: '报价与质检', exact: true }).getAttribute('aria-selected'), 'true');
+      assert.equal(await page.locator('.workflow-journey [aria-current="step"]').innerText().then(t => t.includes('业主确认')), true);
+      await page.locator('.workflow-primary').click();
+      await page.waitForFunction(() => document.activeElement.id === 'project-quote');
+      const adjustment = page.getByLabel('报价调整百分比');
+      await adjustment.fill('2');
+      await page.getByRole('tab', { name: '岗位交接', exact: true }).click();
+      await page.getByRole('heading', { name: '岗位成果与真实交接' }).waitFor();
+      assert.equal(await page.locator('.handoff-list > li').count(), 5);
+      assert.match(await page.locator('.handoff-list').innerText(), /Task #/);
+      assert.equal(await page.getByRole('tabpanel').count(), 1, 'one visible work area');
+      await page.getByRole('tab', { name: '报价与质检', exact: true }).click();
+      assert.equal(await adjustment.inputValue(), '2', 'switching work area preserves edits');
+      await adjustment.fill('0');
+      await page.getByRole('tab', { name: '设计与 3D', exact: true }).click();
+      await page.getByRole('tab', { name: '设计与 3D', exact: true }).press('ArrowRight');
+      assert.equal(await page.getByRole('tab', { name: '报价与质检', exact: true }).getAttribute('aria-selected'), 'true');
+      await page.getByRole('tab', { name: '设计与 3D', exact: true }).click();
+      step.unifiedWorkspace = true;
       await page.getByRole('button', { name: '俯视', exact: true }).first().click();
       await page.getByRole('button', { name: '透视', exact: true }).first().click();
       step.views3D = true;
@@ -184,6 +209,7 @@ async function run() {
       }
       step.exportJsonValid = true;
       page.off('download', onDownload);
+      await page.getByRole('tab', { name: '报价与质检', exact: true }).click();
       const json = page.waitForEvent('download', { timeout: 20000 });
       await page.getByRole('button', { name: '下载交付记录' }).click();
       const jsonFile = await json;
@@ -192,9 +218,29 @@ async function run() {
       assert.equal(delivery.readyForReview, true);
       assert.doesNotMatch(JSON.stringify(delivery), /PRIVATE-/);
       step.deliveryDownload = true;
+      // Confirmed data must survive an automatic publication failure and expose a real retry action.
+      await page.route('**/api/orders', route => route.request().method() === 'POST' ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: '合成断网：发布暂不可用' }) }) : route.continue());
+      const publicationError = new Promise(resolve => page.once('dialog', async dialog => { const text = dialog.message(); await dialog.dismiss(); resolve(text); }));
+      await page.getByRole('button', { name: '✓ 最终确认方案', exact: true }).click();
+      assert.match(await publicationError, /发布/);
+      await page.unroute('**/api/orders');
+      await page.waitForFunction(() => document.querySelector('.workflow-journey [aria-current="step"]')?.textContent.includes('发布与匹配'));
+      await page.locator('.workflow-primary').click();
+      await page.getByRole('button', { name: '重试发布项目', exact: true }).click();
+      await page.getByText('⏳ 已发布到接单市场，正在等待装修公司发布投标数据…（收到报价后自动开始综合匹配）', { exact: true }).waitFor();
+      step.failedPublishRecovery = true;
+      await page.getByRole('tab', { name: '报价与质检', exact: true }).click();
       await page.getByRole('button', { name: '重新质检当前成果' }).click();
       await page.getByText('复检已提交').waitFor();
       step.recheckNotice = true;
+      await page.waitForFunction(() => document.querySelector('.workflow-journey [aria-current="step"]')?.textContent.includes('报价与质检'));
+      await page.getByRole('button', { name: '查看当前任务 →', exact: true }).waitFor();
+      await page.locator('.workflow-primary').click();
+      await page.waitForFunction(() => document.activeElement.id === 'workspace-quote');
+      step.nextActionAfterRecheck = true;
+      await page.getByRole('tab', { name: '签约与履约', exact: true }).click();
+      await page.getByText('请先选定装修公司，再进入现有合同与履约工作台。', { exact: true }).waitFor();
+      await page.getByRole('tab', { name: '岗位交接', exact: true }).click();
       step.projectOverflow = await overflow();
       await page.screenshot({ path: path.join(outDir, `project-${viewport.width}.png`), fullPage: true });
 

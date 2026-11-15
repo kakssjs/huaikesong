@@ -258,3 +258,67 @@ test('boss task decisions are persisted and cannot silently approve already-comp
   assert.equal((await db.listTasks(p.id))[0].status, 'cancelled');
   await assert.rejects(db.decideTask(t.id, 'retry'));
 });
+
+test('one-click studio flow recognizes, saves the returned rooms and hands off once', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../apps/web/app/components/FloorPlanStudio.tsx'), 'utf8');
+  const tree = ts.createSourceFile('studio.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let fn;
+  function visit(n) { if (ts.isFunctionDeclaration(n) && n.name?.text === 'applyTo3D') fn = n.getText(tree); ts.forEachChild(n, visit); }
+  visit(tree);
+  const calls = [];
+  const rooms = [{ name: '客厅', w: 200, d: 100 }];
+  const run = new Function('rects', 'totalArea', 'pipelineRunning', 'applying', 'setBusy', 'setMsg', 'recognize', 'save', 'geometryFromStudioRects', 'onApply', ts.transpileModule(fn + '\nreturn applyTo3D;', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)([], 90, false, { current: false }, () => {}, () => {}, async () => rooms, async r => { calls.push(['save', r]); return true; }, r => ({ rooms: r, width: 10, depth: 9, walls: [], warnings: [] }), async g => calls.push(['apply', g.rooms]));
+  await run();
+  assert.deepEqual(calls, [['save', rooms], ['apply', rooms]]);
+});
+
+test('QA requests corrected input instead of rerendering unchanged invalid geometry', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../apps/web/lib/runner.ts'), 'utf8');
+  const tree = ts.createSourceFile('runner.ts', source, ts.ScriptTarget.Latest, true);
+  const fn = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'runAgent').getText(tree);
+  const rooms = [{ name: '客厅', area: 20 }];
+  const artifacts = { plan: { rooms, geometry: { walls: [], warnings: [] } }, quote: { total: 100, items: [{ total: 100 }] }, decorations: { images: [] }, scene_model: {} };
+  const deps = { getProject: async () => ({ style: '现代' }), getResult: async (_, kind) => ({ content: artifacts[kind] }), calcQuote: () => ({ total: 100 }), listPriceReferences: async () => [], validateSceneModel: () => ({ ok: true }), upsertResult: async () => {} };
+  const run = new Function(...Object.keys(deps), ts.transpileModule(fn + '\nreturn runAgent;', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(...Object.values(deps));
+  const result = await run({ projectId: 1, toAgent: 'qa', input: {} });
+  assert.equal(result.exception, 'low_confidence_floorplan');
+  assert.equal(result.content.passed, false);
+  assert.equal(result.content.fallback, undefined);
+  const images = result.content.checks.find(c => c.check.includes('装饰图完整性'));
+  assert.equal(images.ok, false, 'zero images never pass the image check');
+});
+
+test('retry continues the first incomplete generator, deduplicates active chains and separates QA', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../apps/web/app/api/projects/[id]/replan/route.ts'), 'utf8');
+  const tree = ts.createSourceFile('route.ts', source, ts.ScriptTarget.Latest, true);
+  const fn = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'POST').getText(tree).replace(/^export /, '');
+  class Response { static json(body, options = {}) { return { body, status: options.status ?? 200 }; } }
+  let tasks = [], stage = { key: 'designer', status: 'partial' };
+  const created = [];
+  const deps = { NextResponse: Response, requireSession: async () => ({ role: 'homeowner' }), canEditProject: async () => true, forbidden: () => Response.json({}, { status: 403 }), getProject: async () => ({ id: 1 }), listTasks: async () => tasks, listResults: async () => [], buildDeliveryReport: () => ({ stages: [{ key: 'floor_plan', status: 'done' }, stage] }), createTask: async (...args) => { created.push(args); return { id: 9 }; } };
+  const post = new Function(...Object.keys(deps), ts.transpileModule(fn + '\nreturn POST;', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(...Object.values(deps));
+  const req = { text: async () => JSON.stringify({ retry: true }) }, ctx = { params: Promise.resolve({ id: '1' }) };
+  assert.equal((await post(req, ctx)).status, 200);
+  assert.equal(created[0][2], 'designer'); assert.equal(created[0][3].repair, true);
+  tasks = [{ id: 7, toAgent: 'quote', status: 'running' }];
+  assert.equal((await post(req, ctx)).body.taskId, 7); assert.equal(created.length, 1);
+  tasks = []; stage = { key: 'qa', status: 'partial' };
+  assert.equal((await post(req, ctx)).status, 409); assert.equal(created.length, 1);
+  stage = { key: 'floor_plan', status: 'waiting_user' };
+  assert.equal((await post(req, ctx)).status, 409);
+});
+
+test('repairing room images preserves successes and calls the image model only for missing rooms', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../apps/web/lib/runner.ts'), 'utf8');
+  const tree = ts.createSourceFile('runner.ts', source, ts.ScriptTarget.Latest, true);
+  const fn = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'runAgent').getText(tree);
+  let calls = 0; const saved = {};
+  const rooms = [{ name: '客厅', area: 20 }, { name: '卧室', area: 15 }];
+  const deps = { getProject: async () => ({ style: '现代' }), getResult: async (_, kind) => ({ content: kind === 'plan' ? { rooms, geometry: {} } : { images: [{ room: '客厅', url: '/preserved.png' }, { room: '卧室' }] } }), buildSceneModel: () => ({ materialPreset: {} }), describeMaterialPreset: () => '', planToSvg: () => '<svg/>', generateImage: async () => { calls++; return { url: '/repaired.png' }; }, upsertResult: async (_, kind, value) => { saved[kind] = value; } };
+  const run = new Function(...Object.keys(deps), ts.transpileModule(fn + '\nreturn runAgent;', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(...Object.values(deps));
+  await run({ projectId: 1, toAgent: 'designer', input: { repair: true } });
+  assert.equal(calls, 1);
+  assert.equal(saved.decorations.images[0].url, '/preserved.png');
+  assert.equal(saved.decorations.images[1].url, '/repaired.png');
+  assert.equal(saved.decorations.degraded, undefined);
+});

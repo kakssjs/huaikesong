@@ -14,6 +14,16 @@ export default function DeliveryEvidence({ report }: { report: ReturnType<typeof
   const [error, setError] = useState('');
   const [rechecking, setRechecking] = useState(false);
   const [notice, setNotice] = useState('');
+  async function retryFailed() {
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const res = await fetch(`/api/projects/${report.project.id}/replan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ retry: true }) });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || '重试提交失败');
+      setNotice(`已提交失败环节重试，后续岗位自动接力 · Task #${body.taskId}`);
+    } catch (e) { setError(e instanceof Error ? e.message : '重试提交失败'); }
+    finally { setBusy(false); }
+  }
   async function recheck() {
     setRechecking(true); setError(''); setNotice('');
     try {
@@ -45,7 +55,7 @@ export default function DeliveryEvidence({ report }: { report: ReturnType<typeof
       <div className="delivery-heading">
         <div>
           <h2 id="delivery-evidence-title">本轮交付与人工复核</h2>
-          <p>{report.readyForReview ? '四个环节的任务与成果已齐备，请逐项人工复核。' : '交付尚未齐备，请先处理下面的待办；历史成果仍可查看。'}</p>
+          <p>{report.readyForReview ? '所有岗位已自动完成，无需逐项审批；请在方案确认区一次确认。' : '团队自动接力；失败补齐与重新质检分开操作，具体问题见下方。'}</p>
         </div>
         <button type="button" className="btn" onClick={() => void download()} disabled={busy}>{busy ? '正在下载…' : '下载交付记录'}</button>
       </div>
@@ -61,7 +71,8 @@ export default function DeliveryEvidence({ report }: { report: ReturnType<typeof
           </li>
         ))}
       </ol>
-      <button type="button" className="btn" disabled={rechecking} onClick={() => void recheck()}>{rechecking ? '正在提交…' : '重新质检当前成果'}</button>
+      <button type="button" className="btn" disabled={busy || rechecking || report.stages.some(s => s.status === 'running' || s.status === 'pending')} onClick={() => void retryFailed()}>补齐 / 重试失败步骤</button>
+      <button type="button" className="btn" disabled={busy || rechecking || report.stages.some(s => s.status === 'running' || s.status === 'pending')} onClick={() => void recheck()}>{rechecking ? '正在提交…' : '重新质检当前成果'}</button>
       <p className="wf-muted">可复核表示当前任务与成果满足基础检查；方案、价格、合同签署和施工验收仍由相关人员确认。下载包含已保存成果，请由业主决定分享范围。</p>
       <a href="/opc">查看团队岗位与服务说明 →</a>
     </section>

@@ -89,6 +89,8 @@ export function buildDeliveryReport(input: { project: DeliveryProject; tasks: re
     } else if (status === 'done' && stages.some(s => s.status !== 'done')) {
       status = 'blocked'; nextAction = '前序成果尚未完整交付，请先处理前序问题';
     }
+    if (status === 'done') nextAction = '本岗位已完成，无需单独审批';
+    if (step.key === 'qa' && ['partial', 'waiting_user', 'escalated', 'failed'].includes(status) && typeof content('qa').note === 'string') nextAction = String(content('qa').note);
     stages.push({ ...step, taskId: task?.id ?? null, status, execution: execution[step.key], nextAction });
     newestUpstreamId = Math.max(newestUpstreamId, task?.id ?? -1);
   }

@@ -289,12 +289,20 @@ async function runAgent(task: { id: number; projectId: number; toAgent: string; 
 
       // Agnes 生成各房间装饰效果图：房间有几个生成几个（用户识别/手绘房间优先，Agent 房间兜底），3 张并发
       const decorations: { room: string; prompt: string; url?: string; b64?: string }[] = new Array(rooms.length);
+      const previous = (task.input as { repair?: boolean } | null)?.repair
+        ? (await getResult(task.projectId, 'decorations'))?.content as { images?: typeof decorations } | undefined
+        : undefined;
       let failedImages = 0;
       let nextIdx = 0;
       const workers = Array.from({ length: Math.min(3, rooms.length) }, async () => {
         while (nextIdx < rooms.length) {
           const i = nextIdx++;
           const room = rooms[i];
+          const saved = previous?.images?.[i];
+          if (saved?.room === room.name && (saved.url || saved.b64)) {
+            decorations[i] = saved;
+            continue;
+          }
           const materialPrompt = describeMaterialPreset(sceneModel.materialPreset);
           const prompt = `Interior decoration design photo of a ${room.name}, ${room.area} square meters, ${project.style} style, fully furnished and decorated, warm lighting, realistic, high quality, architectural visualization. ${materialPrompt}`;
           try {
@@ -403,8 +411,8 @@ async function runAgent(task: { id: number; projectId: number; toAgent: string; 
       // 4. 图片完整性（缺失 → render_failed 降级，不阻塞）
       const imgs = decor?.images ?? [];
       const okImgs = imgs.filter(i => i && (i.url || i.b64)).length;
-      const imgOk = imgs.length === 0 || okImgs / imgs.length >= 0.5;
-      checks.push({ check: '装饰图完整性（成功≥50%）', ok: imgOk, rule: 'render_failed', level: 'warn', detail: `${okImgs}/${imgs.length} 张可用` });
+      const imgOk = imgs.length === planContent.rooms.length && okImgs === imgs.length && imgs.length > 0;
+      checks.push({ check: '装饰图完整性（全部房间）', ok: imgOk, rule: 'render_failed', level: 'warn', detail: `${okImgs}/${planContent.rooms.length} 张可用；缺图请使用补齐 / 重试失败步骤` });
 
       const content: Record<string, unknown> = { checks, checkedAt: new Date().toISOString() };
       const criticalFail = checks.find(c => !c.ok && c.level === 'critical');
@@ -416,16 +424,9 @@ async function runAgent(task: { id: number; projectId: number; toAgent: string; 
         Object.assign(content, { passed: false, note: `报价核对未通过：${criticalFail.detail}；按红线升级老板裁决` });
         out = { content, tokens: 0, exception: 'quote_mismatch', note: criticalFail.detail };
       } else if (criticalFail?.rule === 'low_confidence_floorplan') {
-        // 回退 designer 修正（≤2 轮），超限升级老板
-        const allTasks = await listTasks(task.projectId);
-        const rounds = allTasks.filter(t => t.fromAgent === 'qa' && t.toAgent === 'designer').length;
-        if (rounds < 2) {
-          Object.assign(content, { passed: false, fallback: 'designer', round: rounds + 1, note: `几何校验未通过（${criticalFail.detail}），回退设计智能体修正（第 ${rounds + 1}/2 轮）` });
-          out = { content, tokens: 0 };
-        } else {
-          Object.assign(content, { passed: false, note: `几何校验回退 2 轮仍未通过（${criticalFail.detail}），升级老板裁决` });
-          out = { content, tokens: 0, exception: 'qa_fallback_exhausted', note: criticalFail.detail };
-        }
+        // 设计岗位复用同一几何，重跑不能修正户型，必须回到真实输入。
+        Object.assign(content, { passed: false, note: `户型需要补充：${criticalFail.detail}；请在户型画板修正后重新生成。` });
+        out = { content, tokens: 0, exception: 'low_confidence_floorplan', note: criticalFail.detail };
       } else {
         Object.assign(content, {
           passed: true,

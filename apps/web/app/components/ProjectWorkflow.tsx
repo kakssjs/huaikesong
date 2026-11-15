@@ -30,6 +30,10 @@ export function ProjectWorkflow({ workspace, needs, onNavigate }: {
       <div className="coordinator-copy"><h3>小调 · 项目协同总览</h3><p role="status">{workspace.summary}</p><small>根据已保存的任务、成果和订单同步更新，关键决定由相关人员确认。</small></div>
       <button type="button" className="btn btn-primary workflow-primary" onClick={() => onNavigate(workspace.primary.tab, workspace.primary.target)}>{workspace.primary.label} →</button>
     </div>
+    <div className="workspace-context" aria-label="实时岗位交接">
+      <div>{workspace.handoffs.map(step => <p key={step.key}><strong>{agentOf(step.key).name} · {step.label}</strong><span className={step.status === 'done' ? 'tag tag-green' : 'tag'}>{DELIVERY_LABEL[step.status]}</span><span>{step.taskId === null ? '等待任务' : `${agentOf(step.fromAgent ?? 'orchestrator').name} → ${agentOf(step.key).name} · Task #${step.taskId}`}</span></p>)}</div>
+      <button type="button" className="btn btn-ghost" onClick={() => onNavigate('records', 'workspace-records')}>展开岗位交接 →</button>
+    </div>
     <details className="workflow-needs"><summary>本项目需求与协作目标</summary><p data-no-translate>{needs?.trim() || '尚未填写补充需求，请结合户型、风格和预算核对方案。'}</p><p>小测整理空间 → 小设形成方案 → 小算估算费用 → 小检核对交付 → 小桥辅助比较真实投标。小调汇总当前进度和待办。</p></details>
   </section>;
 }

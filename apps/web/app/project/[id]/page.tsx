@@ -744,6 +744,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         </div>
         <FloorPlanStudio
           projectId={Number(id)}
+          pipelineRunning={latestTasks.some(t => t.status === 'pending' || t.status === 'running')}
           totalArea={Number(data.project.area) || undefined}
           initial={fpData}
           onApply={async (g) => {

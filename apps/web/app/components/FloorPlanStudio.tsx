@@ -84,9 +84,11 @@ interface Props {
   onApply?: (geometry: PlanGeometry | null) => void | Promise<void>;
   onRooms?: (rects: StudioRect[]) => void;
   onStdImage?: (url: string | null) => void;
+  pipelineRunning?: boolean;
 }
 
-export default function FloorPlanStudio({ projectId, totalArea, initial, onApply, onRooms, onStdImage }: Props) {
+export default function FloorPlanStudio({ projectId, totalArea, initial, onApply, onRooms, onStdImage, pipelineRunning = false }: Props) {
+  const applying = useRef(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const bgImgRef = useRef<HTMLImageElement | null>(null);
@@ -399,7 +401,7 @@ export default function FloorPlanStudio({ projectId, totalArea, initial, onApply
         body: JSON.stringify({ image: src }),
       });
       const json = await res.json() as { rooms?: { name: string; x: number; y: number; w: number; d: number; openings?: OpeningHint[] }[]; runs?: number; error?: string };
-      if (!json.rooms?.length) { setMsg('识别失败：' + (json.error ?? '未识别出房间')); return; }
+      if (!res.ok || !json.rooms?.length) { setMsg('识别失败：' + (json.error ?? '未识别出房间')); return; }
       const mapped: StudioRect[] = json.rooms.map(r => ({
         id: nextId.current++,
         x: r.x * CANVAS_W, y: r.y * CANVAS_H,
@@ -413,6 +415,7 @@ export default function FloorPlanStudio({ projectId, totalArea, initial, onApply
       setMsg(`已识别 ${mapped.length} 个房间、${openingCount} 处门窗（${json.runs && json.runs > 1 ? `${json.runs} 次识别取多数一致` : '仅 1 次识别，未经互相印证'}）`
         + (doubtful ? `，其中 ${doubtful} 处只有部分识别看到、标了「待核对」，请对照图纸检查` : '')
         + ' — 可编辑名字/大小后生成渲染图与 3D');
+      return mapped;
     } catch {
       setMsg('网络错误，识别失败');
     } finally {
@@ -421,21 +424,27 @@ export default function FloorPlanStudio({ projectId, totalArea, initial, onApply
   }
 
   async function applyTo3D() {
-    if (rects.length === 0) { setMsg('请先框出或识别房间'); return; }
+    if (pipelineRunning || applying.current) return;
+    applying.current = true;
     setBusy('apply');
     try {
-      const geometry = geometryFromStudioRects(rects, totalArea);
-      if (!(await save())) return;
+      const rooms = rects.length ? rects : await recognize();
+      if (!rooms?.length) return;
+      setBusy('apply');
+      const geometry = geometryFromStudioRects(rooms, totalArea);
+      if (!(await save(rooms, true))) return;
       await onApply?.(geometry);
-      setMsg(`已按此户型图生成 3D：开间 ${geometry.width}m × 进深 ${geometry.depth}m，${geometry.walls.length} 面墙${geometry.warnings.length ? `，${geometry.warnings.length} 条提示` : ''}`);
+      setMsg('已提交自动生成：户型 → 2D / 3D 与效果图 → 报价 → 质检。进度见上方岗位交接，完成后只需确认一次方案。');
     } catch (err) {
-      setMsg('3D 生成失败：' + (err as Error).message);
+      setMsg('自动生成提交失败：' + (err as Error).message);
+    } finally {
+      applying.current = false;
+      setBusy('');
     }
-    setBusy('');
   }
 
-  async function save() {
-    setBusy('save');
+  async function save(rooms = rects, keepBusy = false) {
+    if (!keepBusy) setBusy('save');
     setMsg('');
     try {
       const response = await fetch(`/api/projects/${projectId}/results`, {
@@ -445,7 +454,7 @@ export default function FloorPlanStudio({ projectId, totalArea, initial, onApply
           kind: 'floorplan',
           upsert: true,
           content: {
-            image: bgImage, stdImage, rects, strokes,
+            image: bgImage, stdImage, rects: rooms, strokes,
             savedAt: new Date().toISOString(),
             aiGenerated: true,
           },
@@ -457,7 +466,7 @@ export default function FloorPlanStudio({ projectId, totalArea, initial, onApply
     } catch {
       setMsg('保存失败');
       return false;
-    } finally { setBusy(''); }
+    } finally { if (!keepBusy) setBusy(''); }
   }
 
   return (
@@ -611,12 +620,19 @@ export default function FloorPlanStudio({ projectId, totalArea, initial, onApply
             ))}
           </div>
           <p style={{ color: 'var(--text-dim)', fontSize: 11, marginTop: 8 }}>
-            只要有一处门窗记录，3D 和渲染图就以这里的记录为准；全部删光则按规则自动开门窗。改完后点「保存」，再点「按此图生成 3D」。
+            门窗记录用于同源 3D；没有记录时按规则开门窗。修改后点击「一键生成完整方案」，自动保存并继续后续岗位。
           </p>
         </div>
       )}
 
       {/* 动作 */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16 }}>
+        <button type="button" className="btn btn-primary" disabled={busy !== '' || pipelineRunning || (!bgImage && !rects.length && !strokes.length)} onClick={() => void applyTo3D()}>
+          {pipelineRunning ? '团队正在自动生成…' : busy === 'apply' || busy === 'recognize' ? '正在准备方案…' : '一键生成完整方案'}
+        </button>
+      </div>
+      <p>自动识别并保存户型，接力生成 2D / 3D、效果图、报价和质检；失败重试与重新质检分别操作。</p>
+      <details><summary>高级编辑：单独识别、重绘与保存</summary>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16 }}>
         <button className="btn btn-primary" disabled={busy !== ''} onClick={() => void genStandard()}>
           {busy === 'agnes' ? 'Agnes 生成中…' : '✦ Agnes 生成标准平面图'}
@@ -624,13 +640,11 @@ export default function FloorPlanStudio({ projectId, totalArea, initial, onApply
         <button className="btn btn-ghost" disabled={busy !== ''} onClick={() => void recognize()}>
           {busy === 'recognize' ? 'AI 识别中…' : '◎ AI 识别房间'}
         </button>
-        <button className="btn btn-primary" disabled={busy !== ''} onClick={applyTo3D}>
-          {busy === 'apply' ? '建模中…' : '▣ 按此图生成 3D'}
-        </button>
         <button className="btn btn-ghost" disabled={busy !== ''} onClick={() => void save()}>
           {busy === 'save' ? '保存中…' : '保存'}
         </button>
       </div>
+      </details>
 
       {msg && (
         <p style={{ color: 'var(--accent)', fontSize: 12, marginTop: 10 }}>{msg}</p>

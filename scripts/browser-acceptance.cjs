@@ -158,6 +158,29 @@ async function run() {
       assert.equal(await page.getByRole('button', { name: '沟通装修细节', exact: true }).count(), 0);
       step.unselectedChatLocked = true;
 
+      const newProjectApi = `**/api/projects/${page.url().split('/').pop()}`;
+      await page.route(newProjectApi, async route => {
+        const response = await route.fetch();
+        const body = await response.json();
+        await route.fulfill({ response, json: { ...body, tasks: [] } });
+      });
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.getByRole('tab', { name: '需求与户型', exact: true }).click();
+      const automatic = page.getByRole('button', { name: '一键生成完整方案', exact: true });
+      assert.equal(await automatic.isDisabled(), true, 'blank canvas cannot start model calls');
+      await page.locator('input[type="file"]').first().setInputFiles({ name: 'synthetic.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64') });
+      let handoffs = 0;
+      await page.route('**/api/floorplan/recognize', route => route.fulfill({ json: { rooms: [{ name: '客厅', x: 0, y: 0, w: .5, d: 1 }, { name: '卧室', x: .5, y: 0, w: .5, d: 1 }], runs: 3 } }));
+      await page.route('**/replan', route => { handoffs++; return route.fulfill({ json: { ok: true, taskId: 999 } }); });
+      await automatic.click();
+      await page.getByText('已提交自动生成：', { exact: false }).waitFor();
+      assert.equal(handoffs, 1, 'one click hands off the whole chain once');
+      assert.equal(await page.getByLabel('实时岗位交接').count(), 1, 'handoffs stay visible without opening records');
+      await page.unroute('**/api/floorplan/recognize');
+      await page.unroute('**/replan');
+      await page.unroute(newProjectApi);
+      step.oneClickGeneration = true;
+
       // 带完整成果的合成项目：交付面板、3D 视角、导出、交付 JSON 下载
       await page.goto(`${base}/project/${projectId}`, { waitUntil: 'networkidle' });
       await page.getByRole('heading', { name: '本轮交付与人工复核' }).waitFor();

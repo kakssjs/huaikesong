@@ -16,6 +16,30 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'irenovation-regression-')
 process.env.IRENO_PGLITE_DIR = dataDir;
 const db = require('./.regression/db.js');
 
+test('project execution footer distinguishes running, review-ready and incomplete delivery', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../apps/web/app/project/[id]/page.tsx'), 'utf8');
+  const tree = ts.createSourceFile('page.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let expression;
+  let phase;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(tree) === 'phaseLabel') phase = node.initializer.getText(tree);
+    if (ts.isJsxExpression(node) && node.expression?.getText(tree).includes('流水线已暂停 — 请按上方提示')) expression = node.expression.getText(tree);
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  const footer = new Function('tasks', 'delivery', 'waitingTasks', 'escalatedTasks', `return (${expression})`);
+  assert.match(footer([{ status: 'running' }], { readyForReview: false }, [], []), /生成中/);
+  assert.match(footer([{ status: 'done' }], { readyForReview: false }, [], []), /待修正/);
+  assert.match(footer([{ status: 'done' }], { readyForReview: true }, [], []), /待.*确认/);
+  assert.match(footer([], {}, [{}], []), /补充户型/);
+  assert.match(footer([], {}, [], [{}]), /人工处理/);
+  const label = new Function('order', 'delivery', 'data', `return (${phase})`);
+  assert.equal(label(null, { readyForReview: false }, { project: { stage: 3 } }), '方案待复核');
+  assert.equal(label(null, { readyForReview: true }, { project: { stage: 3 } }), '待业主确认');
+  assert.equal(label({}, {}, {}), '施工匹配');
+  assert.equal(label(null, {}, { project: { stage: 1 } }), '方案设计');
+});
+
 test('authentication changes reload the destination even when it is the current route', async () => {
   const vm = require('node:vm');
   const source = fs.readFileSync(path.join(__dirname, '../apps/web/app/components/AuthNav.tsx'), 'utf8');

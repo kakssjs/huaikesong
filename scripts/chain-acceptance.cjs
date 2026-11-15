@@ -235,6 +235,8 @@ async function browserChain(s, orderId) {
         await page.getByPlaceholder('请输入注册手机号').fill(phone);
         await page.getByPlaceholder('请输入密码', { exact: true }).fill(password);
         await page.getByRole('button', { name: '登录', exact: true }).last().click();
+        // 登录会整页跳转；等目标页加载完成后再开始下一次导航。
+        await page.waitForURL(/\/(dashboard|contractor|boss)$/, { waitUntil: 'networkidle' });
         await page.waitForFunction(() => !!JSON.parse(localStorage.getItem('user') || '{}').role);
       };
       const signOut = async () => { await context.clearCookies(); await page.evaluate(() => localStorage.clear()); };

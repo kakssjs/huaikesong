@@ -430,7 +430,7 @@ async function runAgent(task: { id: number; projectId: number; toAgent: string; 
         Object.assign(content, {
           passed: true,
           degraded: warnOnly ? 'render_failed' : undefined,
-          note: warnOnly ? 'QA 通过（部分检查降级：图片/告警项）；项目进入「发布/匹配」阶段' : 'QA 通过；项目进入「发布/匹配」阶段',
+          note: warnOnly ? '关键项检查通过，但图片或布局告警仍待修正；请查看交付面板，补齐并重新质检后再确认发布' : 'QA 通过；等待业主复核确认后发布',
         });
         out = { content, tokens: 0 };
       }

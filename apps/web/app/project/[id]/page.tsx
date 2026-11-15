@@ -504,6 +504,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const matcherTask = [...tasks].filter(t => t.toAgent === 'matcher').sort((a, b) => b.id - a.id)[0];
   const matcherBusy = !!matcherTask && (matcherTask.status === 'pending' || matcherTask.status === 'running');
   const matchCount = match?.contractors?.length ?? 0;
+  const phaseLabel = order ? '施工匹配' : delivery.readyForReview ? '待业主确认' : data.project.stage >= 3 ? '方案待复核' : '方案设计';
 
   const orderStatusTag = (status: string) => {
     const map: Record<string, { text: string; cls: string }> = {
@@ -592,7 +593,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             <div className="project-masthead-meta">
               <span>{data.project.area ? `${data.project.area}㎡` : '面积待量房'}</span>
               <span>{data.project.budget ? `预算 ${data.project.budget}` : '预算待确认'}</span>
-              <span>{data.project.stage >= 3 ? '施工匹配中' : '方案设计中'}</span>
+              <span>{phaseLabel}</span>
             </div>
           </div>
           <div className="project-masthead-actions">
@@ -699,7 +700,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           <div className="brief-item"><span>建筑面积</span><strong>{data.project.area ? `${data.project.area} ㎡` : '待量房'}</strong></div>
           <div className="brief-item"><span>预算区间</span><strong>{budgetText}</strong></div>
           <div className="brief-item"><span>设计风格</span><strong>{data.project.style}</strong></div>
-          <div className="brief-item"><span>当前阶段</span><strong>{data.project.stage >= 3 ? '施工匹配' : '方案设计'}</strong></div>
+          <div className="brief-item"><span>当前阶段</span><strong>{phaseLabel}</strong></div>
           <div className="brief-item"><span>空间规划</span><strong>{studioRects.length > 0 ? `${studioRects.length} 个空间` : plan?.rooms?.length ? `${plan.rooms.length} 个空间` : '待规划'}</strong></div>
         </div>
       </section>
@@ -1284,7 +1285,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
         {!match && (
           <div className="record-foot">
-            <i /> {waitingTasks.length ? '流水线已暂停 — 请按上方提示补充户型信息（上传户型图，或在画板标注房间后点「按此图生成 3D」）' : escalatedTasks.length ? '流水线已暂停 — 等待平台人工处理' : '设计方案生成中 — 这里会实时记录每一步'}
+            <i /> {waitingTasks.length ? '流水线已暂停 — 请按上方提示补充户型信息（上传户型图，或在画板标注房间后点「按此图生成 3D」）' : escalatedTasks.length ? '流水线已暂停 — 等待平台人工处理' : tasks.some(t => t.status === 'pending' || t.status === 'running') ? '设计方案生成中 — 这里会实时记录每一步' : delivery.readyForReview ? '本轮成果已齐备 — 等待业主复核确认' : '本轮执行已结束 — 交付问题待修正，请查看上方复核面板'}
           </div>
         )}
       </section>

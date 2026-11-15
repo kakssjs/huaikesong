@@ -110,6 +110,14 @@ async function run() {
 
   let view = await wf('owner');
   assert.equal(view.mode, 'real'); ok('without CONTRACT_MODE a new contract is real', view.status);
+  const demo = await call('owner', `/api/orders/${orderId}/workflow?mode=demo`);
+  assert.equal(demo.mode, 'demo'); assert.equal(demo.current.signatures.length, 0);
+  assert.notEqual(demo.current.contractId, view.current.contractId);
+  await call('owner', `/api/orders/${orderId}/workflow?mode=invalid`, { expected: 400 });
+  await call('stranger', `/api/orders/${orderId}/workflow?mode=demo`, { expected: 403 });
+  const demoSynced = await call('owner', `/api/orders/${orderId}/workflow/sync?mode=demo`, { method: 'POST' });
+  assert.equal(demoSynced.mode, 'demo'); assert.equal((await wf('owner')).revision, view.revision);
+  ok('one order opens independent demo and real contracts; mode selection retains permissions');
   await call('stranger', `/api/orders/${orderId}/workflow`, { expected: 403 }); ok('an unrelated account cannot read the contract', '403');
   await call('company', '/api/company/contract-profile', { method: 'PUT', body: { party: party('合成装修公司', 'SYN-COMPANY', SIGNER.company), authorizedSignerName: SIGNER.company } });
   await act('owner', 'revise', { patch: { homeowner: party('合成业主', '', '合成业主'), areaBasis: '套内面积', location: 'SYNTHETIC-SITE' } });
@@ -142,6 +150,12 @@ async function run() {
   assert.equal(callback.status, 200);
   view = await wf('owner');
   assert.equal(view.status, 'signed'); assert.equal(view.current.signatures.length, 3); assert.match(view.current.finalFileHash, /^[0-9a-f]{64}$/);
+  const unchangedDemo = await call('owner', `/api/orders/${orderId}/workflow?mode=demo`);
+  assert.equal(unchangedDemo.current.signatures.length, 0); assert.equal(unchangedDemo.fundedCents, 0);
+  const demoFile = await fetch(base + `/api/orders/${orderId}/workflow?mode=demo&format=html`, { headers: { cookie: cookies.owner } });
+  assert.equal(demoFile.status, 200); assert.match(demoFile.headers.get('content-disposition'), /demo/);
+  assert.match(await demoFile.text(), /演示/);
+  ok('signing the real contract does not sign the demo; downloads retain the selected mode');
   ok('a verified callback makes the server fetch the receipt; all three signed', view.status);
   const htmlRes = await fetch(base + `/api/orders/${orderId}/workflow?format=html`, { headers: { cookie: cookies.owner } });
   const html = await htmlRes.text();

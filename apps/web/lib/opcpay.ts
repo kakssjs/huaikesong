@@ -1,27 +1,40 @@
+import { opcpay } from 'opcpay';
+
+// Keep the namespace stable: changing it disconnects previously purchased memberships.
+export function membershipIdentity(kind: 'company' | 'membership', id: number): string {
+  const namespace = process.env.MEMBERSHIP_PAYMENT_NAMESPACE || '';
+  if (namespace && !/^[a-zA-Z0-9_-]{1,40}$/.test(namespace)) throw new Error('会员支付实例标识无效');
+  return `${namespace ? namespace + '-' : ''}${kind}-${id}`;
+}
+
+export function membershipReturnUrl(): string {
+  const base = new URL(process.env.PUBLIC_BASE_URL || '');
+  if (!['https:', 'http:'].includes(base.protocol) || base.username || base.password || base.pathname !== '/' || base.search || base.hash) {
+    throw new Error('会员支付返回地址配置无效');
+  }
+  return new URL('/contractor?payment_return=1', base).href;
+}
+
 // Only the server calls this API; identities always come from the signed company session.
 export async function payRequest(path: string, body?: Record<string, unknown>) {
-  const key = process.env.YIRENFU_API_KEY;
+  const key = process.env.opcpay_api_key;
   if (!key) throw new Error('支付宝收款暂未配置');
-  const response = await fetch('https://ai6666.com/opcpay/api/pay/v1' + path, {
-    method: body ? 'POST' : 'GET', redirect: 'error', cache: 'no-store',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(15000),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    const error = new Error(`支付服务暂不可用（${response.status}），请稍后使用原记录重试`);
-    Object.assign(error, { code: data.error_code });
+  try {
+    return await new opcpay().request<any>(path, body);
+  } catch (cause) {
+    // Do not expose provider error bodies or credentials through public API errors.
+    const error = new Error('支付服务暂不可用，请稍后使用原记录重试');
+    Object.assign(error, { code: (cause as { code?: string }).code });
     throw error;
   }
-  return data;
 }
 
 export function basicSku(product: any): string {
-  const option = product.charging_options?.find((p: any) => p.sku_id === 'S0806000213862097' &&
+  const options = product.charging_options?.filter((p: any) => typeof p.sku_id === 'string' && p.sku_id &&
     p.billing_mode === 'ONE_TIME_DURATION' && p.duration_period === 'MONTH' &&
     p.currency === 'CNY' && p.price === '39.00');
-  if (product.capability_status !== 'ENABLED' || !option) throw new Error('39 元基础月会员暂不可购买');
-  return option.sku_id;
+  if (product.capability_status !== 'ENABLED' || options?.length !== 1) throw new Error('当前基础月会员与商户实际套餐不匹配，暂不可购买');
+  return options[0].sku_id;
 }
 
 export function entitlement(data: any) {
@@ -29,6 +42,7 @@ export function entitlement(data: any) {
     throw new Error('权益结果尚未确认，请稍后刷新');
   }
   if (data.decision !== 'ALLOW' || data.access_granted !== true) return null;
+  if (data.requires_consumption === true) throw new Error('当前会员仅支持时长套餐，不能凭余额直接开放服务');
   const value = data.valid_until;
   if (typeof value !== 'string') throw new Error('会员有效期尚未确认');
   const expires = new Date(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(value) ? value.replace(' ', 'T') + '+08:00' : value);

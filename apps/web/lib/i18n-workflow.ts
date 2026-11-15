@@ -1,4 +1,7 @@
 export const WORKFLOW_EN: Record<string, string> = {
+  '演示合同': 'Demo contract', '真实合同': 'Real contract', '选择合同模式': 'Choose contract mode',
+  '两份合同独立保存。切换不复制签署、验收或资金记录；真实合同须重新确认与签署。': 'The contracts are stored separately. Switching does not copy signatures, inspections or transactions. The real contract needs its own confirmations and signatures.',
+
   '公司确认 → 业主接受或议价 → 三方签署 → 施工验收 → 分期结算。每份合同的签署与资金模式以工作台标注为准；真实合同仅按服务商回执记录，演示合同不发生真实资金流转。平台为合同当事方，独立争议处理结果另行记录。': 'Contractor confirmation → homeowner acceptance or negotiation → three-party signing → inspection → milestone settlement. Each workbench identifies the signing and payment mode: real contracts record provider receipts, while demo contracts move no real funds. The platform is a contracting party; independent dispute outcomes are recorded separately.',
   'AI 装修智能体团队': 'AI renovation agent team',
   '户型识别、设计与 3D、报价质检、施工方匹配，多位专项智能体分工协作，接续签约与履约。关键决定，由你确认。': 'Specialist agents collaborate on floor plans, design and 3D, estimates, quality checks and contractor matching, then support contracting and delivery. You confirm the key decisions.',

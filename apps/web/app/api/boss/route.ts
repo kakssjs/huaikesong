@@ -110,7 +110,7 @@ export async function GET(req: Request) {
     const projectOfOrder = new Map(orderRows.map(o => [o.id, o.projectId]));
     for (const item of contractAttention) {
       approvals.push({
-        id: `contract_${item.orderId}_${item.kind}`, type: `合同 · ${CONTRACT_TYPE[item.kind]}`, level: item.level,
+        id: `contract_${item.orderId}_${item.mode ?? "real"}_${item.kind}`, type: `${item.mode === "demo" ? "演示合同" : "真实合同"} · ${CONTRACT_TYPE[item.kind]}`, level: item.level,
         subject: `${nameOf.get(projectOfOrder.get(item.orderId) ?? -1) ?? '项目'} · ORDER_${item.orderId}`,
         detail: item.detail, action: '打开合同履约工作台处理',
       });

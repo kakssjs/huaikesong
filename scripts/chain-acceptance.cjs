@@ -99,7 +99,7 @@ async function startServer(paidId) {
   server = spawn(process.execPath, ['--require', path.join(root, 'scripts/test-payments.cjs'), path.join(root, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(port)], {
     cwd: path.join(root, 'apps/web'), windowsHide: true, stdio: ['ignore', logFile, logFile],
     env: { ...process.env, NODE_ENV: 'production', RUNNER_ENABLED: 'true', COOKIE_SECURE: 'false', SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
-      LLM_API_KEY: '', AGNES_API_KEY: '', YIRENFU_API_KEY: 'test-fixture-only', TEST_PAYMENT_COMPANY_IDS: `company-${paidId}`,
+      LLM_API_KEY: '', AGNES_API_KEY: '', opcpay_api_key: 'test-fixture-only', TEST_PAYMENT_COMPANY_IDS: `company-${paidId}`,
       BOSS_PHONE, BOSS_PASSWORD, IRENO_PGLITE_DIR: path.join(scratch, 'db'), IRENO_UPLOAD_DIR: path.join(scratch, 'uploads') },
   });
   fs.closeSync(logFile);

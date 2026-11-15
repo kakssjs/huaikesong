@@ -93,6 +93,7 @@ export default function BossConsole() {
       await loadUsers();
     } finally { setUserBusy(null); }
   }
+  const [workflowMode, setWorkflowMode] = useState<'demo' | 'real' | undefined>(undefined);
   const [workflowOrder, setWorkflowOrder] = useState<number | null>(null);
   const [data, setData] = useState<BossData | null>(null);
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
@@ -220,7 +221,7 @@ export default function BossConsole() {
                   {levelTag(item.level)}
                 </div>
                 <p style={{ color: 'var(--text-dim)', fontSize: 13, marginBottom: 10 }}>{item.detail}</p>
-                {item.id.startsWith('contract_') ? <button className="btn btn-primary" onClick={() => setWorkflowOrder(Number(item.id.split('_')[1]))}>打开合同履约</button>
+                {item.id.startsWith('contract_') ? <button className="btn btn-primary" onClick={() => { setWorkflowMode(item.id.split('_')[2] === 'demo' ? 'demo' : 'real'); setWorkflowOrder(Number(item.id.split('_')[1])); }}>打开合同履约</button>
                   : item.id.startsWith('order_') ? <button className="btn" onClick={() => setTab('orders')}>查看订单跟进</button> : (
                   <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                     <button className="btn btn-primary" disabled={approvalBusy !== null} onClick={() => void decideApproval(item, 'approve')}>
@@ -472,7 +473,7 @@ export default function BossConsole() {
                     <td>{o.bidAmount ? Number(o.bidAmount).toLocaleString() : '-'}</td>
                     <td>{o.bidWeeks ? `${o.bidWeeks} 周` : '-'}</td>
                     <td>{o.matchScore ?? '-'}</td>
-                    <td>{['open', 'bidding'].includes(o.status) ? <span className="wf-muted">待业主选择公司</span> : <button className="btn btn-ghost" type="button" onClick={() => setWorkflowOrder(o.id)}>打开合同履约</button>}</td>
+                    <td>{['open', 'bidding'].includes(o.status) ? <span className="wf-muted">待业主选择公司</span> : <button className="btn btn-ghost" type="button" onClick={() => { setWorkflowMode(undefined); setWorkflowOrder(o.id); }}>打开合同履约</button>}</td>
                   </tr>
                 ))}
                 {(data?.orders ?? []).length === 0 && (
@@ -487,7 +488,7 @@ export default function BossConsole() {
         </>
       )}
 
-      {workflowOrder !== null && <ContractWorkbenchDialog orderId={workflowOrder} role="platform" onClose={() => setWorkflowOrder(null)} />}
+      {workflowOrder !== null && <ContractWorkbenchDialog orderId={workflowOrder} role="platform" initialMode={workflowMode} onClose={() => setWorkflowOrder(null)} />}
       <p style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 11, marginTop: 24 }}>
         经营数据实时更新 · 所有执行过程、成本与结算记录可追溯
       </p>

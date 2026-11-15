@@ -189,6 +189,11 @@ export const contractWorkflows = pgTable('contract_workflows', {
   orderId: integer('order_id').primaryKey(), projectId: integer('project_id').notNull(),
   revision: integer('revision').notNull(), state: jsonb('state').notNull(), updatedAt: text('updated_at').notNull(),
 });
+// The other mode of an existing order; the original row and its signed artifacts are never migrated.
+export const contractWorkflowVariants = pgTable('contract_workflow_variants', {
+  orderId: integer('order_id').primaryKey(), projectId: integer('project_id').notNull(),
+  revision: integer('revision').notNull(), state: jsonb('state').notNull(), updatedAt: text('updated_at').notNull(),
+});
 export const workflowOperations = pgTable('workflow_operations', {
   key: text('key').primaryKey(), orderId: integer('order_id').notNull(), fingerprint: text('fingerprint').notNull(),
   revision: integer('revision').notNull(), createdAt: text('created_at').notNull(),
@@ -207,6 +212,7 @@ export const membershipPayments = pgTable('membership_payments', {
   amountCny: integer('amount_cny').notNull(),
   status: text('status').notNull().default('pending'),
   paymentReference: text('payment_reference'),
+  purchaseIntent: jsonb('purchase_intent').$type<{ user_id: string; sku_id: string; callback_url: string; idempotency_key: string }>(),
   createdAt: text('created_at').notNull(),
   paidAt: text('paid_at'),
 });
@@ -334,6 +340,10 @@ CREATE TABLE IF NOT EXISTS contract_workflows (
   order_id integer PRIMARY KEY, project_id integer NOT NULL, revision integer NOT NULL,
   state jsonb NOT NULL, updated_at text NOT NULL
 );
+CREATE TABLE IF NOT EXISTS contract_workflow_variants (
+  order_id integer PRIMARY KEY, project_id integer NOT NULL, revision integer NOT NULL,
+  state jsonb NOT NULL, updated_at text NOT NULL
+);
 CREATE TABLE IF NOT EXISTS workflow_operations (
   key text PRIMARY KEY, order_id integer NOT NULL, fingerprint text NOT NULL, revision integer NOT NULL, created_at text NOT NULL
 );
@@ -342,6 +352,7 @@ CREATE TABLE IF NOT EXISTS company_contract_profiles (
 );
 ALTER TABLE membership_payments ADD COLUMN IF NOT EXISTS billing_cycle text DEFAULT 'annual';
 ALTER TABLE membership_payments ADD COLUMN IF NOT EXISTS period_months integer DEFAULT 12;
+ALTER TABLE membership_payments ADD COLUMN IF NOT EXISTS purchase_intent jsonb;
 CREATE TABLE IF NOT EXISTS price_references (
   id text PRIMARY KEY, city text NOT NULL, category text NOT NULL, item text NOT NULL, unit text NOT NULL,
   low double precision NOT NULL, high double precision NOT NULL, note text NOT NULL DEFAULT '',
@@ -684,12 +695,12 @@ export async function listMembershipPayments(companyId?: number) {
     : db.select().from(membershipPayments).orderBy(asc(membershipPayments.id));
 }
 
-export async function getOrCreateOnlinePayment(companyId: number, baseline: string | null) {
+export async function getOrCreateOnlinePayment(companyId: number, baseline: string | null, intent?: { user_id: string; sku_id: string; callback_url: string; keyPrefix: string }) {
   const db = await getDb();
   return db.transaction(async tx => {
     const pending = await tx.select().from(membershipPayments).where(and(
       eq(membershipPayments.companyId, companyId), eq(membershipPayments.status, 'pending')));
-    const existing = pending.find(p => p.paymentReference?.startsWith('opcpay:'));
+    const existing = pending.find(p => p.paymentReference?.startsWith('opcpay:') && (intent ? p.purchaseIntent?.user_id === intent.user_id : !p.purchaseIntent));
     if (existing) return existing;
     const [company] = await tx.select().from(users).where(and(eq(users.id, companyId), eq(users.role, 'company')));
     if (!company) throw new Error('Company not found');
@@ -698,18 +709,24 @@ export async function getOrCreateOnlinePayment(companyId: number, baseline: stri
       billingCycle: 'monthly', periodMonths: 1, status: 'pending', createdAt: now(),
       paymentReference: 'opcpay:' + (baseline || ''),
     }).returning();
+    if (intent) {
+      const purchaseIntent = { user_id: intent.user_id, sku_id: intent.sku_id, callback_url: intent.callback_url, idempotency_key: `${intent.keyPrefix}${row.id}` };
+      await tx.update(membershipPayments).set({ purchaseIntent }).where(eq(membershipPayments.id, row.id));
+      return { ...row, purchaseIntent };
+    }
     return row;
   });
 }
 
 // An entitlement observation is not a payment receipt; never fabricate paid amounts or transaction IDs.
-export async function observeOnlinePayments(companyId: number, expires: string) {
+export async function observeOnlinePayments(companyId: number, expires: string, providerUserId?: string) {
   const db = await getDb();
   await db.transaction(async tx => {
     const pending = await tx.select().from(membershipPayments).where(and(
       eq(membershipPayments.companyId, companyId), eq(membershipPayments.status, 'pending')));
     for (const payment of pending) {
       if (!payment.paymentReference?.startsWith('opcpay:')) continue;
+      if (providerUserId && payment.purchaseIntent?.user_id !== providerUserId) continue;
       const baseline = payment.paymentReference.slice(7);
       if (!baseline || Date.parse(expires) > Date.parse(baseline)) {
         await tx.update(membershipPayments).set({ status: 'entitlement_confirmed' }).where(eq(membershipPayments.id, payment.id));

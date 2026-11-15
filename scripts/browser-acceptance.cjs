@@ -88,7 +88,7 @@ async function startServer() {
   server = spawn(process.execPath, [path.join(root, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(port)], {
     cwd: path.join(root, 'apps/web'), windowsHide: true, stdio: ['ignore', log, log],
     env: { ...process.env, NODE_ENV: 'production', RUNNER_ENABLED: 'false', COOKIE_SECURE: 'false', SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
-      LLM_API_KEY: '', AGNES_API_KEY: '', YIRENFU_API_KEY: '', BOSS_PHONE: '19900000000', BOSS_PASSWORD: crypto.randomBytes(12).toString('hex'),
+      LLM_API_KEY: '', AGNES_API_KEY: '', opcpay_api_key: '', BOSS_PHONE: '19900000000', BOSS_PASSWORD: crypto.randomBytes(12).toString('hex'),
       IRENO_PGLITE_DIR: path.join(scratch, 'db'), IRENO_UPLOAD_DIR: path.join(scratch, 'uploads') },
   });
   fs.closeSync(log);
@@ -134,6 +134,8 @@ async function run() {
       await page.getByPlaceholder('请输入注册手机号').fill(OWNER_PHONE);
       await page.getByPlaceholder('请输入密码', { exact: true }).fill(PASSWORD);
       await page.getByRole('button', { name: '登录', exact: true }).last().click();
+      // 登录成功后页面自己跳转到工作台（AuthNav 的 location.assign）；等它落地，避免与下面的 goto 互相打断。
+      await page.waitForURL(/\/dashboard/, { waitUntil: 'networkidle' });
       await page.waitForFunction(() => !!JSON.parse(localStorage.getItem('user') || '{}').id);
       step.login = true;
 

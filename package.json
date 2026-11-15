@@ -12,7 +12,7 @@
     "dev:worker": "npm run dev -w apps/worker",
     "build": "npm run build -w apps/web && npm run build -w apps/worker",
     "typecheck": "tsc -b",
-    "test": "node --test scripts/regression.cjs && node --test scripts/workflow.test.cjs && node --test scripts/contract-agent.test.cjs && node --test scripts/workflow-ui.test.cjs && node --test scripts/delivery.test.cjs && node --test scripts/price.test.cjs && node --test scripts/chat.test.cjs && node --test scripts/plan-overlap.test.cjs && node --test scripts/contract-real.test.cjs && node --test scripts/contract-provider.test.cjs && node --test scripts/contract-service.test.cjs && node --test scripts/trial-tools.test.cjs"
+    "test": "node --test scripts/regression.cjs && node --test scripts/workflow.test.cjs && node --test scripts/contract-agent.test.cjs && node --test scripts/workflow-ui.test.cjs && node --test scripts/delivery.test.cjs && node --test scripts/price.test.cjs && node --test scripts/chat.test.cjs && node --test scripts/plan-overlap.test.cjs && node --test scripts/contract-real.test.cjs && node --test scripts/contract-provider.test.cjs && node --test scripts/contract-service.test.cjs && node --test scripts/trial-tools.test.cjs && node scripts/opcpay-test.mjs"
   },
   "engines": {
     "node": ">=24"

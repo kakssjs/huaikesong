@@ -52,7 +52,7 @@ async function login(phone) {
   const out = fs.openSync(path.join(scratch, 'server.log'), 'a');
   child = spawn(process.execPath, [path.join(root, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', '3316'], {
     cwd: path.join(root, 'apps/web'), windowsHide: true, stdio: ['ignore', out, out],
-    env: { ...process.env, NODE_ENV: 'production', RUNNER_ENABLED: 'false', SESSION_SECRET: crypto.randomBytes(48).toString('hex'), COOKIE_SECURE: 'false', MIMO_API_KEY: '', DEEPSEEK_API_KEY: '', YIRENFU_API_KEY: '', BOSS_PHONE: '19900000000', BOSS_PASSWORD: 'DemoOnly2026!' },
+    env: { ...process.env, NODE_ENV: 'production', RUNNER_ENABLED: 'false', SESSION_SECRET: crypto.randomBytes(48).toString('hex'), COOKIE_SECURE: 'false', MIMO_API_KEY: '', DEEPSEEK_API_KEY: '', opcpay_api_key: '', BOSS_PHONE: '19900000000', BOSS_PASSWORD: 'DemoOnly2026!' },
   });
   fs.closeSync(out);
   let ready = false;

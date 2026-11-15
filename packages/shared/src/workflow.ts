@@ -3,7 +3,7 @@ export type WorkflowRole = 'homeowner' | 'company' | 'platform';
 export type WorkflowActor = { uid: number; role: 'homeowner' | 'company' | 'boss' };
 /** 'signed_demo' is kept for contracts signed before real mode existed; 'signed' is a contract signed through a provider. */
 export type WorkflowStatus = 'awaiting_company' | 'awaiting_homeowner' | 'ready_to_freeze' | 'frozen' | 'partially_signed' | 'signed' | 'signed_demo' | 'superseded';
-/** A workflow is created in exactly one mode and never changes it. 'demo' is only reachable with CONTRACT_MODE=demo or on contracts that already exist. */
+/** A workflow is created in exactly one mode and never changes it. An order can retain an independent counterpart in the other mode; switching never converts this state. */
 export type ContractMode = 'real' | 'demo';
 export const getContractMode = (value: string | undefined): ContractMode => value === 'demo' ? 'demo' : 'real';
 export const isSignedStatus = (status: WorkflowStatus | string): boolean => status === 'signed' || status === 'signed_demo';
@@ -735,7 +735,7 @@ export function recordReconciliation(state:WorkflowState,actor:WorkflowActor,rep
   return s;
 }
 /** What on this contract is waiting for the platform. The platform console lists these so a payout request or a dispute is not left unseen. */
-export interface PlatformAttention { orderId:number; kind:'payout_review'|'platform_signature'|'dispute'|'reconciliation'|'provider_check'; level:'高'|'中'; detail:string }
+export interface PlatformAttention { mode?:ContractMode; orderId:number; kind:'payout_review'|'platform_signature'|'dispute'|'reconciliation'|'provider_check'; level:'高'|'中'; detail:string }
 export function platformAttention(state:WorkflowState):PlatformAttention[] {
   if(state.legacyContract)return [];
   const out:PlatformAttention[]=[],requests=state.providerRequests??[],current=state.versions.at(-1)!,money=(n:number)=>`${(n/100).toFixed(2)} 元`;

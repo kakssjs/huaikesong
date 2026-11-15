@@ -138,7 +138,7 @@ function Supplements({ view, role, busy, act, api }: { view: WorkflowView; role:
       <div className="wf-inline">
         {sup.status === 'proposed' && can('confirm_supplement') && <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void act('confirm_supplement', { supplementId: sup.id })}>确认补充协议</button>}
         {['proposed', 'frozen', 'partially_signed'].includes(sup.status) && can('withdraw_supplement') && <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void act('withdraw_supplement', { supplementId: sup.id })}>撤回补充协议</button>}
-        <a className="btn btn-ghost" href={`${api}?format=html&supplement=${encodeURIComponent(sup.id)}`} target="_blank" rel="noreferrer">下载补充协议</a>
+        <a className="btn btn-ghost" href={`${api}&format=html&supplement=${encodeURIComponent(sup.id)}`} target="_blank" rel="noreferrer">下载补充协议</a>
       </div>
     </details>)}
     {can('propose_supplement') && <details><summary>提出补充协议</summary><form onSubmit={async e => {
@@ -299,13 +299,25 @@ function DisputeCard({ dispute, view, busy, act }: { dispute: WorkflowDispute; v
   </article>;
 }
 
-export default function ContractWorkbench({ orderId, role }: { orderId: number; role: WorkflowRole }) {
+export default function ContractWorkbench({ orderId, role, initialMode }: { orderId: number; role: WorkflowRole; initialMode?: 'demo' | 'real' }) {
+  const [selectedMode, setSelectedMode] = useState<'demo' | 'real' | null>(initialMode ?? null);
+  return <div>
+    <div className="wf-inline" role="group" aria-label="选择合同模式">
+      <button type="button" className="btn btn-ghost" aria-pressed={selectedMode === 'demo'} onClick={() => setSelectedMode('demo')}>演示合同</button>
+      <button type="button" className="btn btn-ghost" aria-pressed={selectedMode === 'real'} onClick={() => setSelectedMode('real')}>真实合同</button>
+    </div>
+    <p className="wf-muted">两份合同独立保存。切换不复制签署、验收或资金记录；真实合同须重新确认与签署。</p>
+    <ContractWorkbenchMode key={`${orderId}-${selectedMode ?? 'original'}`} orderId={orderId} role={role} selectedMode={selectedMode} />
+  </div>;
+}
+
+function ContractWorkbenchMode({ orderId, role, selectedMode }: { orderId: number; role: WorkflowRole; selectedMode: 'demo' | 'real' | null }) {
   const [view, setView] = useState<WorkflowView | null>(null); const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(''); const lock = useRef(false);
   const [error, setError] = useState(''); const [message, setMessage] = useState(''); const [editing, setEditing] = useState(false);
   const [offer, setOffer] = useState(''); const [offerNote, setOfferNote] = useState('');
   const [fund, setFund] = useState(''); const [refund, setRefund] = useState(''); const [refundReason, setRefundReason] = useState('');
-  const api = `/api/orders/${orderId}/workflow`;
+  const api = `/api/orders/${orderId}/workflow?${selectedMode ? `mode=${selectedMode}` : ""}`;
   const refresh = useCallback(async () => {
     const response = await fetch(api, { cache: 'no-store' }); const data = await response.json();
     if (!response.ok) throw new Error(data.error || '合同工作台读取失败');
@@ -318,7 +330,7 @@ export default function ContractWorkbench({ orderId, role }: { orderId: number; 
   const runServer = async (path: 'sync' | 'reconcile') => {
     if (lock.current) return; lock.current = true; setBusy(path); setError(''); setMessage('');
     try {
-      const response = await fetch(`${api}/${path}`, { method: 'POST' }); const data = await response.json();
+      const response = await fetch(`/api/orders/${orderId}/workflow/${path}${selectedMode ? `?mode=${selectedMode}` : ""}`, { method: 'POST' }); const data = await response.json();
       if (!response.ok) throw new Error(data.error || SERVER_OPS[path].fail);
       setView(data as WorkflowView); setMessage(SERVER_OPS[path].done);
     } catch (cause) { setError(issue(cause)); } finally { lock.current = false; setBusy(''); }
@@ -367,7 +379,7 @@ export default function ContractWorkbench({ orderId, role }: { orderId: number; 
       : '三方核对同一份合同。签署在电子签署服务商页面完成，入金、拨付与退款由资金服务商执行；只记录服务商回执，每笔出款先经平台复核。未接入服务商的部署只能整理和冻结合同。'}</p>
     <div className="wf-heading"><span>{ROLES[role]}</span><span className="tag tag-cyan">{STATES[view.status] ?? view.status}</span><span>订单 #{orderId} · 合同版本 {view.currentVersion} · 修订号 {view.revision}</span>
       <button className="btn btn-ghost" type="button" disabled={!!busy || loading} onClick={async () => { setError(''); setLoading(true); try { await refresh(); setMessage('已取得共享最新记录'); } catch (cause) { setError(issue(cause)); } finally { setLoading(false); } }}>刷新共享记录</button>
-      <a className="btn btn-ghost" href={`${api}?format=html`} target="_blank" rel="noreferrer">下载 / 打印当前合同</a>
+      <a className="btn btn-ghost" href={`${api}&format=html`} target="_blank" rel="noreferrer">下载 / 打印当前合同</a>
     </div>
     <div aria-live="polite" aria-atomic="true">{error && <p role="alert" className="wf-error">{error}</p>}{message && <p className="wf-success">{message}</p>}{busy && <p role="status">正在记录操作，请稍候…</p>}</div>
     {view.legacyContract && <div className="wf-section"><h3>历史合同只读归档</h3><p>历史合同不能转换为演示签署；后续变更须另行办理补充协议。</p>{view.legacyContent && <pre className="wf-draft" data-no-translate>{view.legacyContent}</pre>}</div>}

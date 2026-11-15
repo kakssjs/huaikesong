@@ -3,7 +3,7 @@
 合同有两种模式，创建工作流时确定，之后不变：
 
 - `mode: "real"`（默认）：真实合同。签署和资金只接受 `sign`、`fund`、`release`、`refund`，并且每一次都必须有电子签署服务商或资金服务商返回的回执才会记录。**仓库不内置任何服务商，也没有接入任何服务商**；未配置时这些动作返回 503 `PROVIDER_NOT_CONFIGURED`，不会记录，也不会降级成演示。
-- `mode: "demo"`：演示合同。只有启动服务时设置环境变量 `CONTRACT_MODE=demo`，新建的合同才是演示合同；此前已创建的合同保持原有模式，不随环境变量改变。演示合同只接受 `sign_demo`、`simulate_fund`、`simulate_release`、`simulate_refund`，不调用模型、签署商或真实支付。
+- `mode: "demo"`：演示合同。`CONTRACT_MODE=demo` 决定原合同默认模式，也可用 `?mode=demo` 进入同订单独立的演示合同；此前已创建的每份合同保持自身模式，不随环境变量改变。演示合同只接受 `sign_demo`、`simulate_fund`、`simulate_release`、`simulate_refund`，不调用模型、签署商或真实支付。
 
 两种模式互相拒绝对方的动作：真实合同收到演示动作、演示合同收到真实动作，都不会记录。只要请求本身格式有效，返回 409 `MODE_MISMATCH`；若请求里的图片或字段先通不过输入校验（例如 `sign_demo` 带了无效图片），则先返回 400 `INVALID_INPUT`。无论哪个错误码，都没有任何记录被写入，因此演示的签名和模拟资金不会被当作真实记录。旧历史合同只读，不能转换成任何一种签署。
 
@@ -101,6 +101,8 @@ type WorkflowView = {
 
 `POST /api/orders/:id/workflow/sync`：任一当事人，取回所有未完成请求的服务商记录。`POST /api/orders/:id/workflow/reconcile`：仅平台；把每笔由回执入账的资金流水与资金服务商当前记录逐笔比对，结果写入 `reconciliation`（`ok`、`checked`、`matched`、`mismatches[]`），**只报告差异，不改任何金额**；服务商暂时不可查询时返回 503 `PROVIDER_UNAVAILABLE` 且不记录结果；未配置资金服务商返回 503 `PROVIDER_NOT_CONFIGURED`。`POST /api/contract-providers/signing/callback` 与 `.../payment/callback`：由适配器的 `verifyCallback` 校验，校验失败 401 `INVALID_CALLBACK`；回调只指明要查哪一笔，正文从不写入合同；请求体上限 1 MB。
 
+回调以“适配器服务商名称 + 签署/支付类别 + 外部单号”定位订单，仅同步该范围内的回执，不因回调派发其他待发送请求。不同服务商或类别的相同单号互不干扰；同一范围若对应多个合同或同一合同内的多个请求，返回 409 `AMBIGUOUS_PROVIDER_REFERENCE`，不选择第一条、不修改合同，须人工核对服务商编号映射。适配器名称应保持稳定并唯一标识同一服务商实例。主动同步接口仍可按当事人权限处理整个订单的待办。
+
 **出款复核**：真实合同的 `release`（申请拨付）与 `refund`（申请退款）先生成 `awaiting_review` 请求并保留金额（`reservedCents`，`availableCents = balanceCents − reservedCents`）。只有平台可 `review_payout`：`{requestId, decision: "approve"|"reject", note}`（复核意见必填）；通过时会重新检查验收、争议、余额与“已验收款保留”，再交服务商；驳回则释放保留。发起人可在复核前用 `cancel_request` 撤回；已交给服务商的出款不能在本地撤回。该阶段提出争议时，等待复核的出款被撤回，已在服务商处理的出款标记 `hold`（“暂停”，结果仍以服务商回执为准），出款未结清的阶段不能被 `resolve_dispute` 解除（409 `PAYOUT_IN_FLIGHT`）。
 
 **补充协议**（已签合同只能这样变更）：`propose_supplement` `{reason, patch}`（业主或公司；`patch` 只能含 `scope`、`totalCents`、`durationDays`、`stages`、`attachments`、`area`、`areaBasis`、`style`、`location`；改总价须同时给出新的分期；不能改当事人资料、平台费率或上游快照）→ 对方 `confirm_supplement` `{supplementId}` → 冻结并算出 `termsHash` → 三方各自 `sign`/`sign_demo`（payload 带 `supplementId`）→ 全部签署后取代对应条款，`view.effective` 给出现行条款。已提交、验收或结算的阶段不能变更（409 `STAGE_LOCKED`）；同一时间只有一份进行中的补充协议（409 `SUPPLEMENT_IN_PROGRESS`）；`withdraw_supplement` 可在全部签署前撤回。补充协议有独立文件：`GET ?format=html&supplement=<id>`，响应头 `X-Contract-Artifact-SHA256`。已签合同正文和它的 `finalFileHash` 不变。
@@ -118,3 +120,12 @@ type WorkflowView = {
 `draftText`追加从当前版本冻结的`source.quote`读取的数量/单位/单价/小计及中选报价说明，以及`source.design`的可读说明。上游报价段最多6000字符、设计段最多9000字符，并显示截取提示；图片/URL/base64等字段不混入说明。输出为纯文本，HTML统一转义，工作台沿用draftText展示；上游活数据覆盖不会回写该快照。
 
 服务端实现：`getOrderWorkflow(orderId, actor)`、`actOnOrderWorkflow(orderId, actor, command)`；慢速适配器先`prepareWorkflowCommand`，再调用`recordAIReview(orderId, actor, command, review)`按原revision保存。公司资料`getContractProfile(actor)`、`putContractProfile(actor,input)`。原始公章仅这两个公司私有接口可读；合同仅包含明确授权后应用的资产副本。
+
+
+## 同订单演示与真实合同并存
+
+工作台提供“演示合同 / 真实合同”按钮。GET、POST `/api/orders/:id/workflow`、POST `/sync`、POST `/reconcile` 支持查询参数 `mode=demo|real`；HTML及补充协议下载同样携带 mode。省略 mode 保持原合同兼容行为，非法值返回400。授权仍按订单参与方检查，模式选择不会绕过权限。
+
+首次进入另一模式时，按当前中选报价及项目资料创建未确认的新合同，不复制原合同的签名、流水、阶段验收、争议、补充协议或模型复核结果。公司私有签约资料仍按公司账号共用；每份合同须各自确认和签署。切换仅改变当前查看/操作对象，不转换旧合同的法律或资金性质。
+
+原记录保留在 contract_workflows，另一份保存在新增的 contract_workflow_variants；启动自动建表，不重写原合同、不清库。两份合同使用独立幂等命名空间和合同编号；请求内模式隔离，不改变其他参与方当前查看模式。回调查询两处真实请求存储并沿原回调隔离规则处理；平台待办标明模式，并打开相应合同。

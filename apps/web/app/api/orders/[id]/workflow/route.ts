@@ -1,3 +1,4 @@
+import { withOrderWorkflowMode } from '@i-renovation/shared/workflow-db';
 import { NextResponse } from 'next/server';
 import { requireSession } from '@/lib/auth';
 import { getOrderWorkflow, actOnOrderWorkflow, recordAIReview, prepareWorkflowCommand } from '@i-renovation/shared/workflow-db';
@@ -14,6 +15,7 @@ function failure(error:unknown) {
 export async function GET(req:Request,ctx:{params:Promise<{id:string}>}) {
   try {
     const actor=await requireSession(req);if(actor instanceof NextResponse)return actor;
+    return await withOrderWorkflowMode(Number((await ctx.params).id),actor,new URL(req.url).searchParams.get('mode'),async()=>{
     const view=await getOrderWorkflow(Number((await ctx.params).id),actor);
     const query=new URL(req.url).searchParams;
     if(query.get('format')==='html') {
@@ -27,11 +29,13 @@ export async function GET(req:Request,ctx:{params:Promise<{id:string}>}) {
         ...(fileHash?{'X-Contract-Artifact-SHA256':fileHash}:{})}});
     }
     return NextResponse.json(view,{headers});
+  });
   }catch(error){return failure(error);}
 }
 export async function POST(req:Request,ctx:{params:Promise<{id:string}>}) {
   try {
     const actor=await requireSession(req);if(actor instanceof NextResponse)return actor;
+    return await withOrderWorkflowMode(Number((await ctx.params).id),actor,new URL(req.url).searchParams.get('mode'),async()=>{
     if(Number(req.headers.get('content-length'))>20_000_000)throw new WorkflowError('请求文件总量过大');
     const raw=await req.text();if(raw.length>20_000_000)throw new WorkflowError('请求文件总量过大');
     let command:WorkflowCommand;try{command=JSON.parse(raw);}catch{throw new WorkflowError('请求JSON无效');}
@@ -49,7 +53,7 @@ export async function POST(req:Request,ctx:{params:Promise<{id:string}>}) {
       const t=view.current.terms;
       // Network call stays outside database locks. Original revision must still match when the result returns.
       let review;
-      const reviewKey=`${id}:${actor.uid}:${actor.role}:${command.requestKey}`;
+      const reviewKey=`${view.mode}:${id}:${actor.uid}:${actor.role}:${command.requestKey}`;
       try {
         let pending=activeReviews.get(reviewKey);
         if(!pending) {
@@ -68,5 +72,6 @@ export async function POST(req:Request,ctx:{params:Promise<{id:string}>}) {
     }
     // For a real signature or payment the service hands the new request to the provider before it returns (see actOnOrderWorkflow).
     return NextResponse.json(await actOnOrderWorkflow(id,actor,command),{headers});
+  });
   }catch(error){return failure(error);}
 }

@@ -9,7 +9,7 @@ import { getOrder, getOrderByProject, getProject, getUser, listBidsByOrder } fro
 export type Role = 'homeowner' | 'company' | 'boss';
 export type Session = { uid: number; role: Role; exp: number };
 
-const COOKIE = 'ireno_session';
+const COOKIE = process.env.SESSION_COOKIE_NAME || 'ireno_session';
 const MAX_AGE_S = 7 * 24 * 3600;
 export const MIN_PASSWORD = 8;
 

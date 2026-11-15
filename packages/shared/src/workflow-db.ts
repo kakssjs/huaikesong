@@ -1,13 +1,25 @@
 /** Server-only persistent workflow service. Transactions and CAS protect the single PGlite process. */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import sharp from 'sharp';
-import { and, eq, sql } from 'drizzle-orm';
-import { getDb, orders, projects, users, results, contracts, bids, contractWorkflows, workflowOperations, companyContractProfiles } from './db';
+import { and, eq, or, sql } from 'drizzle-orm';
+import { getDb, orders, projects, users, results, contracts, bids, contractWorkflows as originalWorkflows, contractWorkflowVariants, workflowOperations, companyContractProfiles } from './db';
 import { initializeWorkflow, getContractMode, isSignedStatus, reduceWorkflow, workflowView, renderWorkflowHtml, assertWorkflowParty, validateCommand, validateParty, validateImageDataUrl,
   textValue, defaultStagePlan, WorkflowError, providerRequestSent, providerRequestFailed, providerRequestCancelled, settleProviderRequest, reconcileWorkflow, recordReconciliation, workflowRole,
   platformAttention, effectiveTerms, type WorkflowActor, type WorkflowState, type WorkflowCommand, type ContractParty, type PaymentReceipt, type PlatformAttention,
-  type ContractTerms, type CompanyContractProfile, type WorkflowAttachment, type AIReview } from './workflow';
+  type ContractMode, type ContractTerms, type CompanyContractProfile, type WorkflowAttachment, type AIReview } from './workflow';
 import { getContractProviders, type CallbackInput } from './contract-providers';
+
+const selectedWorkflow = new AsyncLocalStorage<{ alternate:boolean; mode:ContractMode } | undefined>();
+const workflowTable = () => selectedWorkflow.getStore()?.alternate ? contractWorkflowVariants : originalWorkflows;
+const operationKey = (orderId:number,key:string) => selectedWorkflow.getStore()?.alternate
+  ? `${orderId}:alternate:${selectedWorkflow.getStore()!.mode}:${key}` : `${orderId}:${key}`;
+/** Mode is request-scoped; concurrent requests never change another party's selected contract. */
+export async function withOrderWorkflowMode<T>(orderId:number,actor:WorkflowActor,mode:string|null|undefined,run:()=>Promise<T>):Promise<T> {
+  if(mode!==undefined&&mode!==null&&mode!=='demo'&&mode!=='real')return error('合同模式无效');
+  const original=await selectedWorkflow.run(undefined,()=>getOrderWorkflow(orderId,actor));
+  return selectedWorkflow.run({alternate:!!mode&&mode!==original.mode,mode:(mode||original.mode) as ContractMode},run);
+}
 
 type Database = Awaited<ReturnType<typeof getDb>>;
 type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -81,6 +93,7 @@ function sourceAttachments(design:unknown):WorkflowAttachment[] {
   };walk(design,0);return output;
 }
 async function loadOrCreate(tx:Tx,id:number,actor:WorkflowActor):Promise<WorkflowState> {
+  const contractWorkflows=workflowTable();
   const order=await authorizedOrder(tx,id,actor);
   const [existing]=await tx.select().from(contractWorkflows).where(eq(contractWorkflows.orderId,id));
   if(existing) {const s=existing.state as unknown as WorkflowState;assertWorkflowParty(s,actor);return s;}
@@ -107,7 +120,8 @@ async function loadOrCreate(tx:Tx,id:number,actor:WorkflowActor):Promise<Workflo
       design:{...(design&&typeof design==='object'?design as Record<string,unknown>:{}),floorplan:result('floorplan'),plan:result('plan')},
     }};
   const [legacy]=await tx.select().from(contracts).where(eq(contracts.orderId,id));
-  const at=new Date().toISOString();const state=initializeWorkflow({orderId:id,projectId:project.id,homeownerId:owner.id,companyId:company.id,terms,...(legacy?{legacyContent:legacy.content}:{})},at,getContractMode(process.env.CONTRACT_MODE));
+  const at=new Date().toISOString();const state=initializeWorkflow({orderId:id,projectId:project.id,homeownerId:owner.id,companyId:company.id,terms,...(legacy&&!selectedWorkflow.getStore()?.alternate?{legacyContent:legacy.content}:{})},at,selectedWorkflow.getStore()?.mode??getContractMode(process.env.CONTRACT_MODE));
+  if(selectedWorkflow.getStore()?.alternate) { state.id+=`-${state.mode}`; state.versions[0].contractId+=`-${state.mode}`; }
   await tx.insert(contractWorkflows).values({orderId:id,projectId:project.id,revision:0,state:state as never,updatedAt:at});return state;
 }
 export async function getOrderWorkflow(orderId:number,actor:WorkflowActor) {
@@ -118,18 +132,19 @@ export async function prepareWorkflowCommand(orderId:number,actor:WorkflowActor,
   validateCommand(cmd);
   return serial(async()=>{const db=await getDb();return db.transaction(async tx=>{
     const state=await loadOrCreate(tx,orderId,actor),fingerprint=digest({uid:actor.uid,role:actor.role,action:cmd.action,payload:cmd.payload??{}});
-    const [prior]=await tx.select().from(workflowOperations).where(eq(workflowOperations.key,`${orderId}:${cmd.requestKey}`));
+    const [prior]=await tx.select().from(workflowOperations).where(eq(workflowOperations.key,operationKey(orderId,cmd.requestKey)));
     if(prior&&prior.fingerprint!==fingerprint)return error('幂等请求键已被不同内容或身份使用','IDEMPOTENCY_CONFLICT',409);
     if(!prior&&state.revision!==cmd.expectedRevision)return error('版本已更新，请刷新后重试','STALE_REVISION',409);
     return {view:workflowView(state,actor),replayed:!!prior};
   });});
 }
 async function apply(orderId:number,actor:WorkflowActor,cmd:WorkflowCommand,review?:AIReview) {
+  const contractWorkflows=workflowTable();
   validateCommand(cmd);
   return serial(async()=>{
     const db=await getDb();return db.transaction(async tx=>{
       const state=await loadOrCreate(tx,orderId,actor);
-      const key=`${orderId}:${cmd.requestKey}`,fingerprint=digest({uid:actor.uid,role:actor.role,action:cmd.action,payload:cmd.payload??{}});
+      const key=operationKey(orderId,cmd.requestKey),fingerprint=digest({uid:actor.uid,role:actor.role,action:cmd.action,payload:cmd.payload??{}});
       const [prior]=await tx.select().from(workflowOperations).where(eq(workflowOperations.key,key));
       if(prior) {if(prior.fingerprint!==fingerprint)return error('幂等请求键已被不同内容或身份使用','IDEMPOTENCY_CONFLICT',409);return workflowView(state,actor);}
       if(state.revision!==cmd.expectedRevision)return error('版本已更新，请刷新后重试','STALE_REVISION',409);
@@ -207,10 +222,12 @@ export async function putContractProfile(actor:WorkflowActor,input:unknown):Prom
 // mutateWorkflow, which re-reads the stored state, so a late or repeated provider answer is a no-op.
 // ---------------------------------------------------------------------------------------------------------------
 async function readWorkflow(orderId:number):Promise<WorkflowState> {
+  const contractWorkflows=workflowTable();
   return serial(async()=>{const db=await getDb();const [row]=await db.select().from(contractWorkflows).where(eq(contractWorkflows.orderId,orderId));
     if(!row)return error('合同不存在','NOT_FOUND',404);return row.state as unknown as WorkflowState;});
 }
 async function mutateWorkflow(orderId:number,change:(state:WorkflowState,at:string)=>WorkflowState):Promise<WorkflowState> {
+  const contractWorkflows=workflowTable();
   return serial(async()=>{const db=await getDb();return db.transaction(async tx=>{
     const [row]=await tx.select().from(contractWorkflows).where(eq(contractWorkflows.orderId,orderId));if(!row)return error('合同不存在','NOT_FOUND',404);
     const state=row.state as unknown as WorkflowState,at=new Date().toISOString(),next=change(state,at);
@@ -288,12 +305,16 @@ export async function stopHeldPayouts(orderId:number):Promise<void> {
   }
 }
 
-/** Asks the providers what happened to every open request and records their answers. onlyExternalId limits it to one session or movement. */
-export async function syncProviderRequests(orderId:number,onlyExternalId?:string):Promise<void> {
-  await dispatchProviderRequests(orderId);
-  await stopHeldPayouts(orderId);
+type ProviderScope = { provider:string; kind:'signing'|'payment' };
+/** Asks providers for receipts. A verified callback scopes both the lookup and sync to its provider and request category. */
+export async function syncProviderRequests(orderId:number,onlyExternalId?:string,scope?:ProviderScope):Promise<void> {
+  if(!scope) {
+    await dispatchProviderRequests(orderId);
+    await stopHeldPayouts(orderId);
+  }
   const state=await readWorkflow(orderId),{signing,payment}=getContractProviders();
-  for(const r of (state.providerRequests??[]).filter(x=>x.status==='pending'&&x.externalId&&(!onlyExternalId||x.externalId===onlyExternalId))) {
+  for(const r of (state.providerRequests??[]).filter(x=>x.status==='pending'&&x.externalId&&(!onlyExternalId||x.externalId===onlyExternalId)
+    &&(!scope||(x.provider===scope.provider&&(x.kind==='sign')===(scope.kind==='signing'))))) {
     try {
       if(r.kind==='sign') {
         if(!signing||signing.name!==r.provider)continue;
@@ -333,17 +354,22 @@ export async function reconcileOrderWorkflow(orderId:number,actor:WorkflowActor)
 
 /** Everything across all contracts that is waiting for the platform: payout reviews, its own signatures, disputes, reconciliation differences. */
 export async function listPlatformAttention():Promise<PlatformAttention[]> {
-  return serial(async()=>{const db=await getDb();const rows=await db.select({state:contractWorkflows.state}).from(contractWorkflows);
-    return rows.flatMap(row=>platformAttention(row.state as unknown as WorkflowState));});
+  return serial(async()=>{const db=await getDb();const rows=[...await db.select({state:originalWorkflows.state}).from(originalWorkflows),...await db.select({state:contractWorkflowVariants.state}).from(contractWorkflowVariants)];
+    return rows.flatMap(row=>platformAttention(row.state as unknown as WorkflowState).map(item=>({...item,mode:(row.state as unknown as WorkflowState).mode})));});
 }
 
 /** Finds the order a provider session or movement belongs to. */
-export async function findOrderByProviderReference(externalId:string):Promise<number|null> {
+export async function findOrderByProviderReference(externalId:string,scope?:ProviderScope):Promise<number|null> {
+  const contractWorkflows=workflowTable();
   if(typeof externalId!=='string'||!externalId||externalId.length>200)return null;
   return serial(async()=>{const db=await getDb();
-    const [row]=await db.select({orderId:contractWorkflows.orderId}).from(contractWorkflows)
-      .where(sql`${contractWorkflows.state} @> ${JSON.stringify({providerRequests:[{externalId}]})}::jsonb`).limit(1);
-    return row?.orderId??null;});
+    const references=scope?(scope.kind==='signing'?['sign']:['fund','release','refund']).map(kind=>({externalId,provider:scope.provider,kind})):[{externalId}];
+    const rows=await db.select({orderId:contractWorkflows.orderId,state:contractWorkflows.state}).from(contractWorkflows)
+      .where(or(...references.map(reference=>sql`${contractWorkflows.state} @> ${JSON.stringify({providerRequests:[reference]})}::jsonb`))).limit(2);
+    const repeated=rows.some(row=>((row.state as unknown as WorkflowState).providerRequests??[]).filter(r=>r.externalId===externalId
+      &&(!scope||(r.provider===scope.provider&&(r.kind==='sign')===(scope.kind==='signing')))).length>1);
+    if(rows.length>1||repeated)return error('服务商单号对应多个请求，请人工核对','AMBIGUOUS_PROVIDER_REFERENCE',409);
+    return rows[0]?.orderId??null;});
 }
 
 /** A provider callback only tells the server which session or movement to look at; the record itself is fetched from the provider. */
@@ -353,8 +379,15 @@ export async function handleProviderCallback(kind:'signing'|'payment',input:Call
   let reference;
   try{reference=await withTimeout(provider.verifyCallback(input));}catch{reference=null;}
   if(!reference?.externalId)return error('服务商回调校验未通过','INVALID_CALLBACK',401);
-  const orderId=await findOrderByProviderReference(reference.externalId);
+  const scope={provider:provider.name,kind};
+  const matches=[];
+  for(const alternate of [false,true]) {
+    const orderId=await selectedWorkflow.run({alternate,mode:'real'},()=>findOrderByProviderReference(reference.externalId,scope));
+    if(orderId)matches.push({orderId,alternate});
+  }
+  if(matches.length>1)return error('服务商单号对应多个请求，请人工核对','AMBIGUOUS_PROVIDER_REFERENCE',409);
+  const {orderId,alternate}=matches[0]??{};
   if(!orderId)return error('没有找到对应的签署或资金请求','NOT_FOUND',404);
-  await syncProviderRequests(orderId,reference.externalId);
+  await selectedWorkflow.run({alternate:!!alternate,mode:'real'},()=>syncProviderRequests(orderId,reference.externalId,scope));
   return {orderId};
 }

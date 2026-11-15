@@ -3,6 +3,7 @@
 // matcher 不入链——等「业主确认发布 + 装修公司发布数据（投标）」后单独触发
 // 异常处理按 EXCEPTION_RULES 分派：retry（重试≤N）/ degrade（降级交付）/ escalate_boss（升级老板裁决）/ reask_user（反问用户补充）
 import fs from 'node:fs';
+import { isAdvisoryLayoutWarning } from '@i-renovation/shared/delivery';
 import {
   recoverRunningTasks, claimNextTask, createTask, finishTask, failTask, escalateTask, waitingTask, upsertResult, getProject, getResult, listTasks,
   calcQuote, listPriceReferences, generatePlanGeometry, planFromRects, planToSvg, listCompanies, getOrderByProject, listBidsByOrder, CORE_CHAIN, EXCEPTION_RULES,
@@ -417,6 +418,7 @@ async function runAgent(task: { id: number; projectId: number; toAgent: string; 
       const content: Record<string, unknown> = { checks, checkedAt: new Date().toISOString() };
       const criticalFail = checks.find(c => !c.ok && c.level === 'critical');
       const warnOnly = checks.some(c => !c.ok && c.level === 'warn');
+      const blockingWarning = !imgOk || !sceneCheck.ok || geoWarnings.some(w => !isAdvisoryLayoutWarning(w));
 
       let out: AgentOut;
       if (criticalFail?.rule === 'quote_mismatch') {
@@ -430,8 +432,8 @@ async function runAgent(task: { id: number; projectId: number; toAgent: string; 
       } else {
         Object.assign(content, {
           passed: true,
-          degraded: warnOnly ? 'render_failed' : undefined,
-          note: warnOnly ? '关键项检查通过，但图片或布局告警仍待修正；请查看交付面板，补齐并重新质检后再确认发布' : 'QA 通过；等待业主复核确认后发布',
+          degraded: blockingWarning ? 'render_failed' : undefined,
+          note: blockingWarning ? '图片、3D或布局检查仍有问题，请查看质检明细，修正后重新质检' : warnOnly ? '关键项通过，存在户型尺寸提示，请对照原图复核；无需反复质检，最终尺寸以现场量房为准' : 'QA 通过；等待业主复核确认后发布',
         });
         out = { content, tokens: 0 };
       }

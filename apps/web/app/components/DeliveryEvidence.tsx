@@ -71,6 +71,10 @@ export default function DeliveryEvidence({ report }: { report: ReturnType<typeof
           </li>
         ))}
       </ol>
+      {report.artifacts.filter(a => a.kind === 'qa').map(a => {
+        const qa = a.content as { checks?: { check: string; ok: boolean; detail?: string; level?: string }[] };
+        return <div key="qa-checks"><h3>本次质检明细</h3><ul>{qa.checks?.map((check, i) => <li key={i}><strong>{check.ok ? '通过' : check.level === 'critical' ? '需修正' : '提示'} · {check.check}</strong><p>{check.detail}</p></li>)}</ul></div>;
+      })}
       <button type="button" className="btn" disabled={busy || rechecking || report.stages.some(s => s.status === 'running' || s.status === 'pending')} onClick={() => void retryFailed()}>补齐 / 重试失败步骤</button>
       <button type="button" className="btn" disabled={busy || rechecking || report.stages.some(s => s.status === 'running' || s.status === 'pending')} onClick={() => void recheck()}>{rechecking ? '正在提交…' : '重新质检当前成果'}</button>
       <p className="wf-muted">可复核表示当前任务与成果满足基础检查；方案、价格、合同签署和施工验收仍由相关人员确认。下载包含已保存成果，请由业主决定分享范围。</p>

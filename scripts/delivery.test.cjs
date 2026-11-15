@@ -124,3 +124,18 @@ test('legacy inconsistent quantities or phase durations cannot pass delivery rev
     assert.equal(r.stages[2].status, 'partial');
   }
 });
+
+test('advisory layout warning does not turn successful QA into missing images', () => {
+  const baseline = report();
+  const results = baseline.artifacts.map(a => ({ ...a, content: a.kind === 'qa' ? { passed: true, degraded: 'render_failed', checks: [{ ok: false, rule: 'low_confidence_floorplan', level: 'warn', detail: '房间「主卧」过窄（0.8×1.7m），尺寸以现场量房为准' }] } : a.content }));
+  const tasks = baseline.tasks.map(t => ({ ...t, output: t.toAgent === 'qa' ? { passed: true, degraded: 'render_failed' } : {} }));
+  assert.equal(report({ results, tasks }).readyForReview, true);
+  results.find(a => a.kind === 'qa').content.checks.push({ ok: false, rule: 'render_failed', level: 'warn' });
+  assert.equal(report({ results, tasks }).readyForReview, false);
+});
+
+test('overlap warnings remain blocking even when the old QA passed flag is true', () => {
+  const base = report();
+  const results = base.artifacts.map(a => ({ ...a, content: a.kind === 'qa' ? { passed: true, degraded: 'render_failed', checks: [{ ok: false, rule: 'low_confidence_floorplan', level: 'warn', detail: '房间重叠' }] } : a.content }));
+  assert.equal(report({ results, tasks: base.tasks }).readyForReview, false);
+});

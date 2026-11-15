@@ -19,6 +19,9 @@ const CORE = [
 const ALLOWED = ['plan', 'design', 'scene_model', 'decorations', 'quote', 'qa'];
 const obj = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const arr = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
+export function isAdvisoryLayoutWarning(detail: unknown): boolean {
+  return typeof detail === 'string' && detail.split('；').every(text => /^房间「[^」]+」过窄（[^）]+），尺寸以现场量房为准$/.test(text));
+}
 
 export function buildDeliveryReport(input: { project: DeliveryProject; tasks: readonly DeliveryTask[]; results: readonly DeliveryArtifact[] }) {
   const latest = new Map<string, DeliveryTask>();
@@ -32,6 +35,9 @@ export function buildDeliveryReport(input: { project: DeliveryProject; tasks: re
   const quote = content('quote');
   const images = arr(content('decorations').images);
   const rooms = arr(plan.rooms);
+  const qa = content('qa');
+  const qaChecks = arr(qa.checks).map(obj);
+  const advisoryOnly = qa.passed === true && qaChecks.length > 0 && qaChecks.every(c => c.ok === true || (c.ok === false && c.level === 'warn' && c.rule === 'low_confidence_floorplan' && isAdvisoryLayoutWarning(c.detail)));
   const quoteItems = arr(quote.items);
   const quoteTotal = Number(quote.total);
   const schedule = arr(quote.schedule);
@@ -53,7 +59,7 @@ export function buildDeliveryReport(input: { project: DeliveryProject; tasks: re
     floor_plan: rooms.length > 0 && rooms.every(r => Number(obj(r).area) > 0 && typeof obj(r).name === 'string'),
     designer: typeof content('design').svg === 'string' && !!content('design').svg && !!content('scene_model').schema && imagesComplete,
     quote: validQuote,
-    qa: content('qa').passed === true,
+    qa: qa.passed === true && (!qa.degraded || advisoryOnly),
   };
   const execution: Record<string, string> = {
     floor_plan: plan.source === 'llm' || plan.source === 'mimo' ? '模型识别 + 程序化几何换算' : plan.source === 'user_studio' ? '人工标注 + 程序化几何换算' : '来源未记录，需核对',
@@ -83,7 +89,7 @@ export function buildDeliveryReport(input: { project: DeliveryProject; tasks: re
       status = 'stale'; nextAction = '上游已重新执行，当前为旧成果，请等待本轮重新交付';
     } else if (task?.status === 'done' && dependencyChanged) {
       status = 'stale'; nextAction = '输入或依赖成果已更新，请重新执行本环节并复核';
-    } else if (task?.status === 'done' && (!evidence[step.key] || oldArtifact || obj(task.output).degraded || obj(task.output).fallback || obj(task.output).exception)) {
+    } else if (task?.status === 'done' && (!evidence[step.key] || oldArtifact || (obj(task.output).degraded && !(step.key === 'qa' && advisoryOnly)) || obj(task.output).fallback || obj(task.output).exception)) {
       status = 'partial';
       nextAction = oldArtifact ? '当前产物早于本轮任务，请重新生成并复核' : step.key === 'designer' && !imagesComplete ? '效果图未完整交付，请补生成并复核' : step.key === 'qa' ? '质检未通过或结果缺失，请修正后重新检查' : '交付物缺失、数字不一致或发生降级，请复核后重试';
     } else if (status === 'done' && stages.some(s => s.status !== 'done')) {

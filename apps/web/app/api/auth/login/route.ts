@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server';
-import { getUserByPhone, setUserPasswordHash } from '@i-renovation/shared';
+import { getUserByPhone, setUserPasswordHash, verifyUserContactEmail, getUserByVerifiedEmail } from '@i-renovation/shared';
+import { consumeCode, emailEnabled, normalizeEmail } from '@/lib/email';
 import { checkBossLogin, checkPassword, hashPassword, setSessionCookie, type Role } from '@/lib/auth';
 
 const WRONG = '手机号或密码错误';
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => null) as { phone?: string; password?: string } | null;
+    const body = await req.json().catch(() => null) as { phone?: string; password?: string; email?: unknown; emailCode?: unknown } | null;
     if (!body || typeof body.phone !== 'string' || typeof body.password !== 'string' || body.phone.length > 24 || body.password.length > 128) return NextResponse.json({ error: '登录参数无效' }, { status: 400 });
     const phone = body.phone.trim();
     const password = body.password ?? '';
@@ -29,6 +30,14 @@ export async function POST(req: Request) {
     }
     const check = checkPassword(password, user?.passwordHash);
     if (!user || !check.ok) return NextResponse.json({ error: WRONG }, { status: 401 });
+    if (body.emailCode !== undefined) {
+      const email = normalizeEmail(body.email);
+      if (!emailEnabled() || !email || user.email?.trim().toLowerCase() !== email) return NextResponse.json({ error: '请填写该账号注册时的邮箱' }, { status: 400 });
+      const bound = await getUserByVerifiedEmail(email);
+      if (bound && bound.id !== user.id) return NextResponse.json({ error: '该邮箱已绑定其他账号' }, { status: 409 });
+      if (!(await consumeCode(email, body.emailCode, 'register'))) return NextResponse.json({ error: '邮箱验证码错误或已过期' }, { status: 400 });
+      await verifyUserContactEmail(user.id, email);
+    }
     // 旧账号的明文密码：登录成功后改存哈希
     if (check.legacy) await setUserPasswordHash(user.id, hashPassword(password));
 

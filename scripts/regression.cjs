@@ -322,3 +322,39 @@ test('repairing room images preserves successes and calls the image model only f
   assert.equal(saved.decorations.images[1].url, '/repaired.png');
   assert.equal(saved.decorations.degraded, undefined);
 });
+
+test('phone registration verifies and saves the email code supplied by the existing form', async () => {
+  const src = fs.readFileSync(path.join(__dirname, '../apps/web/app/api/auth/register/route.ts'), 'utf8');
+  const tree = ts.createSourceFile('route.ts', src, ts.ScriptTarget.Latest, true);
+  const fn = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'POST').getText(tree).replace(/^export /, '');
+  const created = []; let valid = true;
+  const deps = { NextResponse: { json: (body, opts = {}) => ({ body, status: opts.status || 200 }) }, MIN_PASSWORD: 8, checkBossLogin: () => null, hashPassword: () => 'hash', getUserByPhone: async () => null, emailEnabled: () => true, normalizeEmail: s => s.trim().toLowerCase(), getUserByVerifiedEmail: async () => null, consumeCode: async () => valid, createUser: async u => { created.push(u); return { ...u, id: 1 }; }, setSessionCookie: () => {} };
+  const post = new Function(...Object.keys(deps), ts.transpileModule(fn + '\nreturn POST;', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(...Object.values(deps));
+  const req = { json: async () => ({ role: 'homeowner', name: 'Synthetic', phone: '19900009999', password: 'test-only-password', email: 'QA@EXAMPLE.TEST', emailCode: '123456' }) };
+  assert.equal((await post(req)).status, 200);
+  assert.equal(created[0].email, 'qa@example.test'); assert.ok(created[0].emailVerifiedAt);
+  valid = false; assert.equal((await post(req)).status, 400); assert.equal(created.length, 1);
+});
+
+test('legacy contact email can be enabled only after password and email code proof', async () => {
+  const src = fs.readFileSync(path.join(__dirname, '../apps/web/app/api/auth/login/route.ts'), 'utf8');
+  const tree = ts.createSourceFile('route.ts', src, ts.ScriptTarget.Latest, true);
+  const fn = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'POST').getText(tree).replace(/^export /, '');
+  const bound = []; let passwordOk = false, codeOk = true;
+  const deps = { NextResponse: { json: (body, opts = {}) => ({ body, status: opts.status || 200 }) }, WRONG: 'wrong', checkBossLogin: () => null, getUserByPhone: async () => ({ id: 1, role: 'homeowner', email: 'qa@example.test', passwordHash: 'hash' }), checkPassword: () => ({ ok: passwordOk }), emailEnabled: () => true, normalizeEmail: s => s.trim().toLowerCase(), getUserByVerifiedEmail: async () => null, consumeCode: async () => codeOk, verifyUserContactEmail: async (...args) => bound.push(args), setSessionCookie: () => {} };
+  const post = new Function(...Object.keys(deps), ts.transpileModule(fn + '\nreturn POST;', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(...Object.values(deps));
+  const req = { json: async () => ({ phone: '19900009999', password: 'test', email: 'qa@example.test', emailCode: '123456' }) };
+  assert.equal((await post(req)).status, 401); assert.equal(bound.length, 0);
+  passwordOk = true; codeOk = false; assert.equal((await post(req)).status, 400); assert.equal(bound.length, 0);
+  codeOk = true; assert.equal((await post(req)).status, 200); assert.deepEqual(bound, [[1, 'qa@example.test']]);
+});
+
+test('verified contact email cannot be stolen by another account with the same unverified contact', async () => {
+  const email = 'shared-contact@example.test';
+  const a = await db.createUser({ role: 'homeowner', name: 'a', email });
+  const b = await db.createUser({ role: 'company', name: 'b', email });
+  await db.verifyUserContactEmail(a.id, email);
+  assert.equal((await db.getUserByVerifiedEmail(email)).id, a.id);
+  await assert.rejects(db.verifyUserContactEmail(b.id, email));
+  await assert.rejects(db.verifyUserContactEmail(b.id, 'other@example.test'));
+});

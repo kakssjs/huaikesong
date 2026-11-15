@@ -597,6 +597,18 @@ export async function getUserByVerifiedEmail(email: string) {
   return row ?? null;
 }
 
+/** Only call after both account password and email code have been verified. */
+export async function verifyUserContactEmail(id: number, email: string) {
+  const db = await getDb();
+  return db.transaction(async tx => {
+    const [user] = await tx.select().from(users).where(eq(users.id, id));
+    if (!user || user.email?.trim().toLowerCase() !== email) throw new Error('邮箱与账号资料不一致');
+    const [bound] = await tx.select().from(users).where(and(eq(users.email, email), isNotNull(users.emailVerifiedAt)));
+    if (bound && bound.id !== id) throw new Error('该邮箱已绑定其他账号');
+    await tx.update(users).set({ email, emailVerifiedAt: now() }).where(eq(users.id, id));
+  });
+}
+
 // ---- 邮箱验证码 ----
 
 const nowSec = () => Math.floor(Date.now() / 1000);

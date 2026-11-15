@@ -69,6 +69,14 @@ export async function POST(req: Request) {
       }
       // 手机号注册时填的邮箱只是联系方式，没验证过，不能用来登录
       emailFields = { email: body.email?.trim() || undefined };
+      if (body.emailCode) {
+        if (!emailEnabled()) return NextResponse.json({ error: '邮箱验证未开启' }, { status: 400 });
+        const email = normalizeEmail(body.email);
+        if (!email) return NextResponse.json({ error: '请填写有效的邮箱' }, { status: 400 });
+        if (await getUserByVerifiedEmail(email)) return NextResponse.json({ error: '该邮箱已绑定账号，请直接登录' }, { status: 409 });
+        if (!(await consumeCode(email, body.emailCode, 'register'))) return NextResponse.json({ error: '邮箱验证码错误或已过期' }, { status: 400 });
+        emailFields = { email, emailVerifiedAt: new Date().toISOString() };
+      }
     } else {
       if (!emailEnabled()) return NextResponse.json({ error: '邮箱注册未开启，请用手机号注册' }, { status: 400 });
       const email = normalizeEmail(body.email);

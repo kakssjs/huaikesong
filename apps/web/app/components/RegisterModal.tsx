@@ -124,7 +124,7 @@ function EmailCodeInput({ email, onEmail, code, onCode, purpose, placeholder }: 
       const data = (await res.json().catch(() => ({}))) as { resendAfterSeconds?: number; error?: string };
       if (!res.ok) { setNote(data.error ?? '验证码发送失败，请稍后重试'); return; }
       setLeft(data.resendAfterSeconds ?? 60);
-      setNote('验证码已发送，请查收邮件（也看看垃圾邮件箱），5 分钟内有效');
+      setNote(purpose === 'login' ? '若该邮箱已完成验证，验证码会发送到邮箱，5 分钟内有效。收不到时请用手机号密码登录并验证邮箱。' : '验证码已发送，请查收邮件（也看看垃圾邮件箱），5 分钟内有效');
     } catch {
       setNote('网络异常，请稍后重试');
     } finally {
@@ -203,6 +203,7 @@ export default function RegisterModal({
   const [loginWith, setLoginWith] = useState<'phone' | 'email'>('phone');
   const [loginEmail, setLoginEmail] = useState('');
   const [loginCode, setLoginCode] = useState('');
+  const [verifyContact, setVerifyContact] = useState(false);
   useEffect(() => {
     fetch('/api/auth/email')
       .then(r => r.json())
@@ -320,7 +321,7 @@ export default function RegisterModal({
       const res = await fetch(byEmail ? '/api/auth/email/login' : '/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(byEmail ? { email: loginEmail.trim(), code: loginCode } : { phone: loginPhone, password: loginPassword }),
+        body: JSON.stringify(byEmail ? { email: loginEmail.trim(), code: loginCode } : { phone: loginPhone, password: loginPassword, ...(emailOn && verifyContact ? { email: loginEmail.trim(), emailCode: loginCode } : {}) }),
       });
       const data = (await res.json()) as { id?: number; role?: string; name?: string; companyName?: string; error?: string };
       if (!res.ok || typeof data.id !== 'number') {
@@ -414,6 +415,10 @@ export default function RegisterModal({
                     onChange={(e) => setLoginPassword(e.target.value)}
                   />
                 </div>
+                {emailOn && <>
+                  <label><input type="checkbox" checked={verifyContact} onChange={e => { setVerifyContact(e.target.checked); setLoginCode(''); }} /> 同时验证注册邮箱，启用邮箱验证码登录</label>
+                  {verifyContact && <EmailCodeInput key="verify-contact" email={loginEmail} onEmail={setLoginEmail} code={loginCode} onCode={setLoginCode} purpose="register" placeholder="请输入此手机号账号注册时填写的邮箱" />}
+                </>}
               </>
             )}
             {error && (

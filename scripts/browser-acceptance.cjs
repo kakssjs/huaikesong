@@ -129,8 +129,15 @@ async function run() {
       await page.screenshot({ path: path.join(outDir, `opc-${viewport.width}.png`), fullPage: true });
 
       // 登录
+      await page.route('**/api/auth/email', route => route.fulfill({ json: { enabled: true } }));
       await page.goto(base + '/', { waitUntil: 'networkidle' });
       await page.locator('[data-auth="login"]').click();
+      const verifyContact = page.getByRole('checkbox', { name: '同时验证注册邮箱，启用邮箱验证码登录' });
+      await verifyContact.check();
+      await page.getByPlaceholder('请输入此手机号账号注册时填写的邮箱').waitFor();
+      await page.screenshot({ path: path.join(outDir, `email-recovery-${viewport.width}.png`), fullPage: true });
+      await verifyContact.uncheck();
+      step.emailRecoveryEntry = true;
       await page.getByPlaceholder('请输入注册手机号').fill(OWNER_PHONE);
       await page.getByPlaceholder('请输入密码', { exact: true }).fill(PASSWORD);
       await page.getByRole('button', { name: '登录', exact: true }).last().click();

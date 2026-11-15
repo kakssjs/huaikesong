@@ -220,7 +220,8 @@ export default function BossConsole() {
                   {levelTag(item.level)}
                 </div>
                 <p style={{ color: 'var(--text-dim)', fontSize: 13, marginBottom: 10 }}>{item.detail}</p>
-                {item.id.startsWith('order_') ? <button className="btn" onClick={() => setTab('orders')}>查看订单跟进</button> : (
+                {item.id.startsWith('contract_') ? <button className="btn btn-primary" onClick={() => setWorkflowOrder(Number(item.id.split('_')[1]))}>打开合同履约</button>
+                  : item.id.startsWith('order_') ? <button className="btn" onClick={() => setTab('orders')}>查看订单跟进</button> : (
                   <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                     <button className="btn btn-primary" disabled={approvalBusy !== null} onClick={() => void decideApproval(item, 'approve')}>
                       {item.id.startsWith('user_') ? '通过资质审核' : '重试任务'}
@@ -454,7 +455,7 @@ export default function BossConsole() {
       {tab === 'orders' && (
         <>
           <p style={{ color: 'var(--text-dim)', fontSize: 12, marginBottom: 14 }}>
-            公司确认 → 业主接受或议价 → 三方合同演示签署 → 施工验收 → 模拟分期结算。平台为合同当事方，独立争议处理结果另行记录；模拟余额不代表真实托管。
+            公司确认 → 业主接受或议价 → 三方签署 → 施工验收 → 分期结算。每份合同的签署与资金模式以工作台标注为准；真实合同仅按服务商回执记录，演示合同不发生真实资金流转。平台为合同当事方，独立争议处理结果另行记录。
           </p>
           <div className="panel">
             <div className="wf-table-wrap">

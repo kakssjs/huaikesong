@@ -10,7 +10,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const project = await getProject(id);
   if (!project) return NextResponse.json({ error: 'not found' }, { status: 404 });
   if (!(await canEditProject(s, id))) return forbidden();
-  const body = await req.json().catch(() => ({})) as { reason?: string };
+  let body: { reason?: string };
+  try { const text = await req.text(); body = text ? JSON.parse(text) : {}; }
+  catch { return NextResponse.json({ error: '请求参数无效' }, { status: 400 }); }
+  if (!body || typeof body !== 'object' || Array.isArray(body) || (body.reason !== undefined && typeof body.reason !== 'string')) return NextResponse.json({ error: '请求参数无效' }, { status: 400 });
   const task = await createTask(id, 'orchestrator', 'qa', { projectId: id, reason: body.reason ?? '重新质检（QA recheck）' });
   return NextResponse.json({ ok: true, taskId: task.id });
 }

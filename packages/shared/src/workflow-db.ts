@@ -1,11 +1,13 @@
 /** Server-only persistent workflow service. Transactions and CAS protect the single PGlite process. */
 import { createHash } from 'node:crypto';
 import sharp from 'sharp';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { getDb, orders, projects, users, results, contracts, bids, contractWorkflows, workflowOperations, companyContractProfiles } from './db';
 import { initializeWorkflow, getContractMode, isSignedStatus, reduceWorkflow, workflowView, renderWorkflowHtml, assertWorkflowParty, validateCommand, validateParty, validateImageDataUrl,
-  textValue, defaultStagePlan, WorkflowError, type WorkflowActor, type WorkflowState, type WorkflowCommand, type ContractParty,
+  textValue, defaultStagePlan, WorkflowError, providerRequestSent, providerRequestFailed, providerRequestCancelled, settleProviderRequest, reconcileWorkflow, recordReconciliation, workflowRole,
+  platformAttention, effectiveTerms, type WorkflowActor, type WorkflowState, type WorkflowCommand, type ContractParty, type PaymentReceipt, type PlatformAttention,
   type ContractTerms, type CompanyContractProfile, type WorkflowAttachment, type AIReview } from './workflow';
+import { getContractProviders, type CallbackInput } from './contract-providers';
 
 type Database = Awaited<ReturnType<typeof getDb>>;
 type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -22,6 +24,20 @@ export function canonicalJson(value:unknown):string {
 const digest=(value:unknown)=>createHash('sha256').update(canonicalJson(value)).digest('hex');
 const error=(message:string,code='INVALID_INPUT',status=400):never=>{throw new WorkflowError(message,code,status);};
 const blankParty=(name='',contact=''):ContractParty=>({legalName:name,registrationId:'',representative:'',contact});
+const PLATFORM_VIEW:WorkflowActor={uid:0,role:'boss'};
+/** The digest the parties sign for a supplement: its terms bound to the signed contract it changes. */
+function supplementDigest(state:WorkflowState,supplementId:string):string|undefined {
+  const sup=(state.supplements??[]).find(x=>x.id===supplementId);if(!sup)return undefined;
+  const base=state.versions.find(x=>x.number===sup.baseVersion);
+  return digest({contractId:base?.contractId,baseVersion:sup.baseVersion,contractTermsHash:base?.termsHash,number:sup.number,reason:sup.reason,changes:sup.changes,terms:sup.terms});
+}
+/** Once fully signed, the exported file of the contract (and of each supplement) is fixed by its SHA-256. The file does not depend on who views it. */
+function finalizeArtifacts(next:WorkflowState) {
+  const current=next.versions.at(-1)!;
+  if(isSignedStatus(current.status)&&!current.finalFileHash)current.finalFileHash=createHash('sha256').update(renderWorkflowHtml(workflowView(next,PLATFORM_VIEW))).digest('hex');
+  for(const sup of next.supplements??[])if((sup.status==='signed'||sup.status==='signed_demo')&&!sup.finalFileHash)
+    sup.finalFileHash=createHash('sha256').update(renderWorkflowHtml(workflowView(next,PLATFORM_VIEW),sup.id)).digest('hex');
+}
 
 async function decodeContractAsset(value:unknown) {
   const dataUrl=validateImageDataUrl(value);
@@ -120,20 +136,27 @@ async function apply(orderId:number,actor:WorkflowActor,cmd:WorkflowCommand,revi
       if(cmd.action==='ai_review'&&!review)return error('规则草案，模型未调用；请使用服务端模型复核入口','MODEL_NOT_CONFIGURED',503);
       const [profileRow]=await tx.select().from(companyContractProfiles).where(eq(companyContractProfiles.companyId,state.companyId));
       const profile=profileRow?.profile as CompanyContractProfile|null,version=state.versions.at(-1)!;
+      const supplementId=typeof cmd.payload?.supplementId==='string'?cmd.payload.supplementId:undefined;
+      const supplement=supplementId?(state.supplements??[]).find(x=>x.id===supplementId):undefined;
       let appliedSignatureDataUrl:string|undefined,appliedSealDataUrl:string|undefined;
       if(cmd.action==='sign_demo') {
+        // A supplement's demo signature and seal are bound to the supplement, so they cannot be lifted onto the contract.
+        const bindId=supplement?`${version.contractId}-s${supplement.number}`:version.contractId;
         if(actor.role==='company') {
           if(cmd.payload?.authorizeSeal!==true)return error('公司必须明确授权本次合同用章');
           if(!profile?.sealDataUrl)return error('请先保存本公司的私有公章与授权资料');
-          appliedSealDataUrl=await deriveContractSeal(profile.sealDataUrl,version.contractId,version.number);
+          appliedSealDataUrl=await deriveContractSeal(profile.sealDataUrl,bindId,version.number);
         }
-        appliedSignatureDataUrl=await deriveContractAsset(cmd.payload?.signatureDataUrl,version.contractId,version.number,`SIGNATURE ${actor.role.toUpperCase()}`);
+        appliedSignatureDataUrl=await deriveContractAsset(cmd.payload?.signatureDataUrl,bindId,version.number,`SIGNATURE ${actor.role.toUpperCase()}`);
       }
+      // Which provider would carry this action. Without one, real actions are refused (503) rather than recorded.
+      const providers=getContractProviders();
+      const provider=cmd.action==='sign'?providers.signing?.name:['fund','release','refund','review_payout'].includes(cmd.action)?providers.payment?.name:undefined;
+      const supplementTermsHash=cmd.action==='confirm_supplement'&&supplement?supplementDigest(state,supplement.id):undefined;
       const at=new Date().toISOString();const next=reduceWorkflow(state,actor,cmd,{at,profile,appliedSignatureDataUrl,appliedSealDataUrl,
         termsHash:digest(version.terms),signatureHash:typeof cmd.payload?.signatureDataUrl==='string'?digest(cmd.payload.signatureDataUrl):undefined,
-        sealHash:appliedSealDataUrl?digest(appliedSealDataUrl):undefined,aiReview:review});
-      const current=next.versions.at(-1)!;
-      if(isSignedStatus(current.status)&&!current.finalFileHash)current.finalFileHash=createHash('sha256').update(renderWorkflowHtml(workflowView(next,actor))).digest('hex');
+        sealHash:appliedSealDataUrl?digest(appliedSealDataUrl):undefined,aiReview:review,provider,supplementTermsHash});
+      finalizeArtifacts(next);
       const [saved]=await tx.update(contractWorkflows).set({revision:next.revision,state:next as never,updatedAt:at})
         .where(and(eq(contractWorkflows.orderId,orderId),eq(contractWorkflows.revision,cmd.expectedRevision))).returning({revision:contractWorkflows.revision});
       if(!saved)return error('版本已更新，请刷新后重试','STALE_REVISION',409);
@@ -142,7 +165,21 @@ async function apply(orderId:number,actor:WorkflowActor,cmd:WorkflowCommand,revi
     });
   });
 }
-export const actOnOrderWorkflow=(orderId:number,actor:WorkflowActor,cmd:WorkflowCommand)=>apply(orderId,actor,cmd);
+/** Actions that can open a request the server has to hand to a signing or payment provider. */
+const PROVIDER_ACTIONS=new Set(['sign','fund','review_payout']);
+export async function actOnOrderWorkflow(orderId:number,actor:WorkflowActor,cmd:WorkflowCommand) {
+  const view=await apply(orderId,actor,cmd);
+  // A real signature or payment the command just opened is handed to the provider now, outside the database lock. The returned view then
+  // carries the provider link for the party; nothing is signed or paid until the provider receipt arrives.
+  if(PROVIDER_ACTIONS.has(cmd.action)&&(view.providerRequests??[]).some(r=>r.status==='creating'&&!r.hold)) {
+    await dispatchProviderRequests(orderId);return getOrderWorkflow(orderId,actor);
+  }
+  // A dispute has just put a payout that is already with the provider on hold: ask the provider to stop it, if it can.
+  if(cmd.action==='open_dispute'&&(view.providerRequests??[]).some(r=>r.hold&&r.status==='pending')) {
+    await stopHeldPayouts(orderId);return getOrderWorkflow(orderId,actor);
+  }
+  return view;
+}
 /** Called only by a server adapter, never with a client-provided model result. CAS discards stale asynchronous reviews. */
 export const recordAIReview=(orderId:number,actor:WorkflowActor,cmd:WorkflowCommand,review:AIReview)=>{
   if(cmd.action!=='ai_review')return Promise.reject(new WorkflowError('模型复核操作无效'));
@@ -163,4 +200,161 @@ export async function putContractProfile(actor:WorkflowActor,input:unknown):Prom
   if(profile.sealDataUrl)await decodeContractAsset(profile.sealDataUrl);
   return serial(async()=>{const db=await getDb();return db.transaction(async tx=>{await requireCompany(tx,actor);await tx.insert(companyContractProfiles).values({companyId:actor.uid,profile:profile as never,updatedAt:profile.updatedAt})
     .onConflictDoUpdate({target:companyContractProfiles.companyId,set:{profile:profile as never,updatedAt:profile.updatedAt}});return profile;});});
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Provider flow. Network calls to a provider never happen inside the database lock. Every write goes through
+// mutateWorkflow, which re-reads the stored state, so a late or repeated provider answer is a no-op.
+// ---------------------------------------------------------------------------------------------------------------
+async function readWorkflow(orderId:number):Promise<WorkflowState> {
+  return serial(async()=>{const db=await getDb();const [row]=await db.select().from(contractWorkflows).where(eq(contractWorkflows.orderId,orderId));
+    if(!row)return error('合同不存在','NOT_FOUND',404);return row.state as unknown as WorkflowState;});
+}
+async function mutateWorkflow(orderId:number,change:(state:WorkflowState,at:string)=>WorkflowState):Promise<WorkflowState> {
+  return serial(async()=>{const db=await getDb();return db.transaction(async tx=>{
+    const [row]=await tx.select().from(contractWorkflows).where(eq(contractWorkflows.orderId,orderId));if(!row)return error('合同不存在','NOT_FOUND',404);
+    const state=row.state as unknown as WorkflowState,at=new Date().toISOString(),next=change(state,at);
+    if(next===state)return state;
+    finalizeArtifacts(next);
+    const [saved]=await tx.update(contractWorkflows).set({revision:next.revision,state:next as never,updatedAt:at})
+      .where(and(eq(contractWorkflows.orderId,orderId),eq(contractWorkflows.revision,state.revision))).returning({revision:contractWorkflows.revision});
+    if(!saved)return error('版本已更新，请刷新后重试','STALE_REVISION',409);
+    return next;
+  });});
+}
+const inflight=(globalThis as unknown as {__providerInflight?:Set<string>}).__providerInflight??=new Set<string>();
+const message=(cause:unknown)=>(cause instanceof Error?cause.message:String(cause)).slice(0,300);
+/** A provider that never answers must not keep a request, or the HTTP request that started it, open for ever. CONTRACT_PROVIDER_TIMEOUT_MS overrides the 20 s default. */
+const providerTimeoutMs=()=>{const value=Number(process.env.CONTRACT_PROVIDER_TIMEOUT_MS);return Number.isFinite(value)&&value>=100?value:20_000;};
+function withTimeout<T>(work:Promise<T>):Promise<T> {
+  let timer:ReturnType<typeof setTimeout>|undefined;const limit=providerTimeoutMs();
+  return Promise.race([work,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error(`服务商在 ${Math.round(limit/1000)} 秒内没有响应`)),limit);})]).finally(()=>clearTimeout(timer));
+}
+const externalIdOf=(result:{externalId?:unknown}|null|undefined):string=>{
+  if(!result||typeof result.externalId!=='string'||!result.externalId.trim())throw new Error('服务商没有返回外部单号');
+  return result.externalId;
+};
+
+/**
+ * Hands every request the workflow opened (status creating) to its provider, using the request id as idempotency key.
+ * A payout that a dispute has put on hold is not sent: nothing new leaves while the dispute is open.
+ */
+export async function dispatchProviderRequests(orderId:number):Promise<void> {
+  const state=await readWorkflow(orderId),{signing,payment}=getContractProviders();
+  for(const r of (state.providerRequests??[]).filter(x=>x.status==='creating'&&!x.hold)) {
+    if(inflight.has(r.id))continue;inflight.add(r.id);
+    try {
+      const terms=effectiveTerms(state);
+      if(r.kind==='sign') {
+        if(!signing){await mutateWorkflow(orderId,(s,at)=>providerRequestFailed(s,r.id,'未配置电子签署服务商',at));continue;}
+        const version=state.versions.find(x=>x.number===r.version)??state.versions.at(-1)!,sup=r.supplementId?(state.supplements??[]).find(x=>x.id===r.supplementId):undefined;
+        const signed=sup?sup.terms:version.terms,party=r.role==='homeowner'?signed.homeowner:r.role==='company'?signed.company:signed.platform;
+        let result;
+        try {
+          result=await withTimeout(signing.createSignRequest({requestId:r.id,contractId:version.contractId,version:version.number,role:r.role,termsHash:r.termsHash??'',
+            ...(sup?{supplement:{id:sup.id,number:sup.number}}:{}),signer:{name:r.signerName??'',party,organization:r.role!=='homeowner'}}));
+          externalIdOf(result);
+        } catch(cause){await mutateWorkflow(orderId,(s,at)=>providerRequestFailed(s,r.id,`电子签署服务商未受理：${message(cause)}`,at));continue;}
+        await mutateWorkflow(orderId,(s,at)=>providerRequestSent(s,r.id,{provider:signing.name,externalId:result.externalId,actionUrl:result.signUrl,expiresAt:result.expiresAt},at));
+      } else {
+        if(!payment){await mutateWorkflow(orderId,(s,at)=>providerRequestFailed(s,r.id,'未配置资金服务商',at));continue;}
+        let result;
+        try {
+          // The provider is told who pays or is paid and, for a payout, how much of it is the platform fee, so that it can split the payment.
+          result=await withTimeout(payment.createPayment({contractId:state.versions.at(-1)!.contractId,kind:r.kind,amountCents:r.amountCents??0,idempotencyKey:r.id,
+            ...(r.stageId?{stageId:r.stageId}:{}),...(r.reason?{reason:r.reason}:{}),
+            ...(r.kind==='fund'?{payer:terms.homeowner}:r.kind==='release'?{payee:terms.company,platformFeeCents:r.feeCents??0}
+              :{payee:terms.homeowner,relatedExternalIds:state.transactions.filter(x=>x.type==='fund'&&x.receipt?.provider===payment.name).map(x=>x.receipt!.externalId)})}));
+          externalIdOf(result);
+        } catch(cause){await mutateWorkflow(orderId,(s,at)=>providerRequestFailed(s,r.id,`资金服务商未受理：${message(cause)}`,at));continue;}
+        await mutateWorkflow(orderId,(s,at)=>providerRequestSent(s,r.id,{provider:payment.name,externalId:result.externalId,actionUrl:result.payUrl},at));
+      }
+    } finally {inflight.delete(r.id);}
+  }
+}
+
+/**
+ * A dispute puts payouts that are already with the provider on hold. This asks the provider to stop them, if it can.
+ * Only a confirmation from the provider closes the request; without it the request stays on hold and the provider receipt decides.
+ */
+export async function stopHeldPayouts(orderId:number):Promise<void> {
+  const state=await readWorkflow(orderId),{payment}=getContractProviders();
+  if(!payment?.cancelPayment)return;
+  for(const r of (state.providerRequests??[]).filter(x=>x.hold&&x.status==='pending'&&x.externalId&&x.provider===payment.name)) {
+    try {
+      if(await withTimeout(payment.cancelPayment(r.externalId!))===true)
+        await mutateWorkflow(orderId,(s,at)=>providerRequestCancelled(s,r.id,'争议期间已由资金服务商撤回，资金没有划出',at));
+    } catch(cause){console.warn(`[contract-provider] 撤回 ${r.id} 失败：`,message(cause));}
+  }
+}
+
+/** Asks the providers what happened to every open request and records their answers. onlyExternalId limits it to one session or movement. */
+export async function syncProviderRequests(orderId:number,onlyExternalId?:string):Promise<void> {
+  await dispatchProviderRequests(orderId);
+  await stopHeldPayouts(orderId);
+  const state=await readWorkflow(orderId),{signing,payment}=getContractProviders();
+  for(const r of (state.providerRequests??[]).filter(x=>x.status==='pending'&&x.externalId&&(!onlyExternalId||x.externalId===onlyExternalId))) {
+    try {
+      if(r.kind==='sign') {
+        if(!signing||signing.name!==r.provider)continue;
+        const receipt=await withTimeout(signing.fetchResult(r.externalId!));
+        if(receipt)await mutateWorkflow(orderId,(s,at)=>settleProviderRequest(s,r.id,{signing:receipt},at));
+      } else {
+        if(!payment||payment.name!==r.provider)continue;
+        const receipt=await withTimeout(payment.fetchPayment(r.externalId!));
+        if(receipt)await mutateWorkflow(orderId,(s,at)=>settleProviderRequest(s,r.id,{payment:receipt},at));
+      }
+    } catch(cause){console.warn(`[contract-provider] 查询 ${r.id} 失败：`,message(cause));}
+  }
+}
+
+/** Runs a sync for a party of the order. */
+export async function syncOrderWorkflow(orderId:number,actor:WorkflowActor) {
+  await getOrderWorkflow(orderId,actor);
+  await syncProviderRequests(orderId);
+  return getOrderWorkflow(orderId,actor);
+}
+
+/** The platform compares every recorded money movement with the payment provider's current records. No amount is changed. */
+export async function reconcileOrderWorkflow(orderId:number,actor:WorkflowActor) {
+  const view=await getOrderWorkflow(orderId,actor);
+  if(workflowRole(actor)!=='platform')return error('仅平台可以发起对账','FORBIDDEN',403);
+  const {payment}=getContractProviders();
+  if(!payment)return error('尚未配置资金服务商，无法对账','PROVIDER_NOT_CONFIGURED',503);
+  const lookup:Record<string,PaymentReceipt|null>={};
+  for(const tx of view.transactions.filter(x=>x.receipt)) {
+    const externalId=tx.receipt!.externalId;if(externalId in lookup)continue;
+    try{lookup[externalId]=await withTimeout(payment.fetchPayment(externalId));}catch(cause){return error(`资金服务商暂时无法查询（${message(cause)}），本次没有记录对账结果`,'PROVIDER_UNAVAILABLE',503);}
+  }
+  const report=reconcileWorkflow(view,lookup);
+  await mutateWorkflow(orderId,(s,at)=>recordReconciliation(s,actor,report,at));
+  return getOrderWorkflow(orderId,actor);
+}
+
+/** Everything across all contracts that is waiting for the platform: payout reviews, its own signatures, disputes, reconciliation differences. */
+export async function listPlatformAttention():Promise<PlatformAttention[]> {
+  return serial(async()=>{const db=await getDb();const rows=await db.select({state:contractWorkflows.state}).from(contractWorkflows);
+    return rows.flatMap(row=>platformAttention(row.state as unknown as WorkflowState));});
+}
+
+/** Finds the order a provider session or movement belongs to. */
+export async function findOrderByProviderReference(externalId:string):Promise<number|null> {
+  if(typeof externalId!=='string'||!externalId||externalId.length>200)return null;
+  return serial(async()=>{const db=await getDb();
+    const [row]=await db.select({orderId:contractWorkflows.orderId}).from(contractWorkflows)
+      .where(sql`${contractWorkflows.state} @> ${JSON.stringify({providerRequests:[{externalId}]})}::jsonb`).limit(1);
+    return row?.orderId??null;});
+}
+
+/** A provider callback only tells the server which session or movement to look at; the record itself is fetched from the provider. */
+export async function handleProviderCallback(kind:'signing'|'payment',input:CallbackInput):Promise<{orderId:number}> {
+  const providers=getContractProviders(),provider=kind==='signing'?providers.signing:providers.payment;
+  if(!provider?.verifyCallback)return error('未配置该服务商的回调校验','PROVIDER_NOT_CONFIGURED',404);
+  let reference;
+  try{reference=await withTimeout(provider.verifyCallback(input));}catch{reference=null;}
+  if(!reference?.externalId)return error('服务商回调校验未通过','INVALID_CALLBACK',401);
+  const orderId=await findOrderByProviderReference(reference.externalId);
+  if(!orderId)return error('没有找到对应的签署或资金请求','NOT_FOUND',404);
+  await syncProviderRequests(orderId,reference.externalId);
+  return {orderId};
 }

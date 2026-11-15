@@ -1,36 +1,49 @@
 'use client';
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import RegisterModal from './RegisterModal';
 
 export default function AuthNav() {
-  const router = useRouter();
   const [modalMode, setModalMode] = useState<'register' | 'login' | null>(null);
   const [user, setUser] = useState<{ id: number; role: string; name: string; companyName?: string } | null>(null);
 
   useEffect(() => {
-    const saved = localStorage.getItem('user');
-    if (saved) { try { setUser(JSON.parse(saved)); } catch {} }
-    // 以服务端会话为准：Cookie 过期或失效时，清掉浏览器里记住的账号
-    fetch('/api/auth/me').then(res => {
-      if (res.status === 401) { setUser(null); localStorage.removeItem('user'); }
+    let live = true;
+    fetch('/api/auth/me').then(async res => {
+      if (!live) return;
+      if (res.ok) {
+        const { id, role, name, companyName } = await res.json();
+        if (!live) return;
+        const current = { id, role, name, companyName };
+        setUser(current);
+        try { localStorage.setItem('user', JSON.stringify(current)); } catch {}
+      } else if (res.status === 401 || res.status === 404) {
+        setUser(null);
+        try { localStorage.removeItem('user'); } catch {}
+      }
     }).catch(() => {});
+    return () => { live = false; };
   }, []);
 
   function handleSuccess(u: { id: number; role: string; name: string; companyName?: string }) {
     setUser(u);
-    localStorage.setItem('user', JSON.stringify(u));
+    try { localStorage.setItem('user', JSON.stringify(u)); } catch {}
     setModalMode(null);
-    // 按角色跳转到对应控制台
-    router.push(u.role === 'boss' ? '/boss' : u.role === 'company' ? '/contractor' : '/dashboard');
+    // 同一路由也重新挂载页面，让权限与数据按新的服务端会话读取。
+    window.location.assign(u.role === 'boss' ? '/boss' : u.role === 'company' ? '/contractor' : '/dashboard');
   }
 
   async function logout() {
-    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    try {
+      const response = await fetch('/api/auth/logout', { method: 'POST' });
+      if (!response.ok) throw new Error('logout failed');
+    } catch {
+      window.alert('退出失败，请检查网络后重试');
+      return;
+    }
     setUser(null);
-    localStorage.removeItem('user');
-    router.push('/');
+    try { localStorage.removeItem('user'); } catch {}
+    window.location.assign('/');
   }
 
   if (user) {

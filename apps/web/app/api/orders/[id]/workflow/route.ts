@@ -15,9 +15,17 @@ export async function GET(req:Request,ctx:{params:Promise<{id:string}>}) {
   try {
     const actor=await requireSession(req);if(actor instanceof NextResponse)return actor;
     const view=await getOrderWorkflow(Number((await ctx.params).id),actor);
-    if(new URL(req.url).searchParams.get('format')==='html')return new Response(renderWorkflowHtml(view),{headers:{...headers,'Content-Type':'text/html; charset=utf-8',
-      'Content-Disposition':`attachment; filename="yushe-${view.orderId}-v${view.currentVersion}-demo.html"`,'X-Content-Type-Options':'nosniff',
-      ...(view.current.finalFileHash?{'X-Contract-Artifact-SHA256':view.current.finalFileHash}:{})}});
+    const query=new URL(req.url).searchParams;
+    if(query.get('format')==='html') {
+      const supplementId=query.get('supplement')??undefined;
+      const supplement=supplementId?(view.supplements??[]).find(x=>x.id===supplementId):undefined;
+      if(supplementId&&!supplement)throw new WorkflowError('补充协议不存在','NOT_FOUND',404);
+      const fileHash=supplement?supplement.finalFileHash:view.current.finalFileHash;
+      const name=`yushe-${view.orderId}-v${view.currentVersion}${supplement?`-supplement-${supplement.number}`:''}-${view.mode==='demo'?'demo':'contract'}.html`;
+      return new Response(renderWorkflowHtml(view,supplementId),{headers:{...headers,'Content-Type':'text/html; charset=utf-8',
+        'Content-Disposition':`attachment; filename="${name}"`,'X-Content-Type-Options':'nosniff',
+        ...(fileHash?{'X-Contract-Artifact-SHA256':fileHash}:{})}});
+    }
     return NextResponse.json(view,{headers});
   }catch(error){return failure(error);}
 }
@@ -58,6 +66,7 @@ export async function POST(req:Request,ctx:{params:Promise<{id:string}>}) {
       finally {activeReviews.delete(reviewKey);}
       return NextResponse.json(await recordAIReview(id,actor,command,review),{headers});
     }
+    // For a real signature or payment the service hands the new request to the provider before it returns (see actOnOrderWorkflow).
     return NextResponse.json(await actOnOrderWorkflow(id,actor,command),{headers});
   }catch(error){return failure(error);}
 }

@@ -6,8 +6,8 @@ const WRONG = '手机号或密码错误';
 
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as { phone?: string; password?: string };
-    if (typeof body.phone !== 'string' || typeof body.password !== 'string' || body.phone.length > 24 || body.password.length > 128) return NextResponse.json({ error: '登录参数无效' }, { status: 400 });
+    const body = await req.json().catch(() => null) as { phone?: string; password?: string } | null;
+    if (!body || typeof body.phone !== 'string' || typeof body.password !== 'string' || body.phone.length > 24 || body.password.length > 128) return NextResponse.json({ error: '登录参数无效' }, { status: 400 });
     const phone = body.phone.trim();
     const password = body.password ?? '';
     if (!phone) return NextResponse.json({ error: '请填写手机号' }, { status: 400 });

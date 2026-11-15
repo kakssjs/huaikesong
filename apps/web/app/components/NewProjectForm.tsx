@@ -21,9 +21,6 @@ export default function NewProjectForm() {
       : Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
     fd.set('requestKey', requestKey.current);
     try {
-      const u = JSON.parse(localStorage.getItem('user') ?? '{}');
-      if (u?.id) fd.set('homeownerId', String(u.id));
-
       // 保存前先确认服务端登录状态，避免把 401 误报成网络故障
       const authRes = await fetch('/api/auth/me', { credentials: 'same-origin' });
       if (authRes.status === 401) {

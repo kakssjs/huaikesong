@@ -3,6 +3,7 @@
 // owner selects -> contract workflow opens for owner/company/platform -> stranger is refused. Then the browser
 // opens the company console, the boss console and the owner's project page.
 // Usage: npm run build, then: node scripts/chain-acceptance.cjs --isolated-demo
+// Add --http-only to run the API and Runner checks without launching a browser.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -13,12 +14,13 @@ const ts = require('typescript');
 if (process.argv[2] !== '--isolated-demo') throw new Error('Explicit --isolated-demo is required');
 
 const root = path.resolve(__dirname, '..');
+const httpOnly = process.argv.includes('--http-only');
 const firstExisting = list => list.filter(Boolean).find(p => fs.existsSync(p));
 const playwrightPath = firstExisting([process.env.PLAYWRIGHT_CORE_PATH, path.join(root, 'node_modules/playwright-core'), path.join(root, 'node_modules/playwright'), 'D:/chatgpt/3dgongfang/studio/node_modules/playwright-core']);
 const chromePath = firstExisting([process.env.CHROME_PATH, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome', '/usr/bin/chromium']);
-if (!playwrightPath) throw new Error('playwright-core not found: set PLAYWRIGHT_CORE_PATH');
-if (!chromePath) throw new Error('Chrome not found: set CHROME_PATH');
-const { chromium } = require(playwrightPath);
+if (!httpOnly && !playwrightPath) throw new Error('playwright-core not found: set PLAYWRIGHT_CORE_PATH');
+if (!httpOnly && !chromePath) throw new Error('Chrome not found: set CHROME_PATH');
+const chromium = httpOnly ? null : require(playwrightPath).chromium;
 
 const port = Number(process.env.CHAIN_ACCEPTANCE_PORT || 3323);
 const base = `http://127.0.0.1:${port}`;
@@ -171,6 +173,7 @@ async function httpChain(s) {
     return p.results?.find(x => x.kind === 'match')?.content;
   }, '匹配结果');
   assert.equal(match.matchedBy, 'rules'); assert.equal(match.contractors.length, 1);
+  assert.match(match.contractors[0].reason, /报价与平台测算接近/);
   assert.match(match.summary, /暂不可用|规则/);
   ok('投标触发匹配；无模型密钥时如实按规则评分', `matchedBy=${match.matchedBy}, score=${match.contractors[0].score}`);
   assert.ok(!JSON.stringify(match).includes('PRIVATE-')); ok('匹配结果不含私有字段');
@@ -191,6 +194,28 @@ async function httpChain(s) {
   }
   r = await api(`/api/orders/${orderId}/workflow`, { cookie: ownerCookie });
   assert.equal(r.json.status === undefined, false); ok('合同工作流起始状态', `status=${r.json.status}, revision=${r.json.revision}`);
+
+  // Run a newly submitted project through the real Runner, with external model services disabled.
+  const form = new FormData(); form.set('name', '合成流水线恢复验收'); form.set('area', '60'); form.set('style', '现代简约');
+  const created = await fetch(base + '/api/projects', { method: 'POST', headers: { cookie: ownerCookie }, body: form });
+  assert.equal(created.status, 200); const freshId = (await created.json()).id;
+  await waitFor(async () => (await api(`/api/projects/${freshId}`, { cookie: ownerCookie })).json.tasks?.some(t => t.status === 'waiting_user'), '缺户型等待补充');
+  ok('新建项目缺户型时等待用户补充，不生成假户型');
+  r = await api(`/api/projects/${freshId}/results`, { method: 'POST', cookie: ownerCookie, body: { kind: 'floorplan', upsert: true, content: {
+    rects: [{ name: '客厅', x: 0, y: 0, w: 400, d: 300 }, { name: '卧室', x: 400, y: 0, w: 400, d: 300 }],
+  } } }); assert.equal(r.status, 200);
+  r = await api(`/api/projects/${freshId}/resume`, { method: 'POST', cookie: ownerCookie }); assert.equal(r.status, 200); assert.equal(r.json.resumed, 1);
+  const generated = await waitFor(async () => {
+    const p = (await api(`/api/projects/${freshId}`, { cookie: ownerCookie })).json;
+    return p.results?.some(x => x.kind === 'quote') && p.results?.some(x => x.kind === 'qa') ? p : null;
+  }, '恢复后生成二维三维报价与质检');
+  for (const kind of ['plan', 'design', 'scene_model', 'quote', 'qa']) assert.ok(generated.results.some(x => x.kind === kind), kind);
+  assert.equal(generated.results.find(x => x.kind === 'plan').content.source, 'user_studio');
+  ok('补充手绘房间后恢复真实任务链，生成二维、三维、报价及质检');
+  r = await api(`/api/projects/${freshId}/delivery`, { cookie: ownerCookie });
+  assert.equal(r.json.readyForReview, false);
+  r = await api('/api/orders', { method: 'POST', cookie: ownerCookie, body: { projectId: freshId } }); assert.equal(r.status, 409);
+  ok('图像服务未配置时如实标记缺图，禁止未齐备项目发布');
   return { orderId, ownerCookie };
 }
 
@@ -310,7 +335,7 @@ async function browserChain(s, orderId) {
   const s = await seed();
   await startServer(s.paidId);
   const { orderId } = await httpChain(s);
-  const browser = await browserChain(s, orderId);
+  const browser = httpOnly ? { skipped: 'Explicit --http-only; browser checks were not run' } : await browserChain(s, orderId);
   fs.writeFileSync(path.join(outDir, 'chain-acceptance.json'), JSON.stringify({ log, browser }, null, 2));
   console.log(JSON.stringify({ status: 'passed', fixture: 'synthetic accounts and saved results; no model or real payment calls', httpChecks: checks, browser, outDir }, null, 1));
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(() => { if (server) server.kill(); });

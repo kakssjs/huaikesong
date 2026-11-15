@@ -75,11 +75,11 @@ function scoreBid(c: CompanyRow | undefined, b: BidRow, style: string, quoteTota
   else if (risk.level === 'high_ball') { score -= 8; reasons.push('报价偏高，降低匹配优先级'); }
   else if (risk.level === 'fair') { score += 8; reasons.push('报价处于合理区间'); }
   const weeks = Number(b.weeks) || 0;
-  if (quoteTotal > 0 && amount > 0) {
-    const drift = Math.abs(amount - quoteTotal) / quoteTotal;
+  if (quoteTotal > 0 && amountCny > 0) {
+    const drift = Math.abs(amountCny - quoteTotal) / quoteTotal;
     if (drift <= 0.15) { score += 20; reasons.push('报价与平台测算接近'); }
     else if (drift <= 0.35) { score += 12; reasons.push('报价基本合理'); }
-    else if (amount > quoteTotal) { score += 2; reasons.push('报价明显高于平台测算'); }
+    else if (amountCny > quoteTotal) { score += 2; reasons.push('报价明显高于平台测算'); }
     else { score += 8; reasons.push('报价低于平台测算'); }
   }
   if (weeks > 0 && weeks <= 12) { score += 15; reasons.push(`工期 ${weeks} 周较优`); }
@@ -281,7 +281,8 @@ async function runAgent(task: { id: number; projectId: number; toAgent: string; 
       const content = {
         svg, rooms, geometry, style: project.style, needs: project.needs,
         sceneModelId: sceneModel.schema, materialPresetId: sceneModel.materialPresetId,
-        note: 'AI 生成二维布局方案（施工参考）· 2D、3D、材质与导出共用同一套场景模型',
+        // 二维图由 planToSvg 按户型几何画出，不经过模型，所以不写成「AI 生成」
+        note: '程序按户型数据生成的二维布局图（施工参考）· 2D、3D、材质与导出共用同一套场景模型',
       };
       await upsertResult(task.projectId, 'design', content);
       await upsertResult(task.projectId, 'scene_model', sceneModel);

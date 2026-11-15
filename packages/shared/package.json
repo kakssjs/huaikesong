@@ -25,6 +25,10 @@
       "types": "./src/workflow-db.ts",
       "default": "./src/workflow-db.ts"
     },
+    "./contract-providers": {
+      "types": "./src/contract-providers.ts",
+      "default": "./src/contract-providers.ts"
+    },
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"

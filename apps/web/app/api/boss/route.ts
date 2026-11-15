@@ -4,6 +4,7 @@ import {
   getDb, projects, tasks, results, commissionSettlements, listAllProjects, listAllTasks, listAllOrders, listCompanies, listMembershipPayments, EXCEPTION_RULES,
 } from '@i-renovation/shared';
 import { requireSession } from '@/lib/auth';
+import { listPlatformAttention } from '@i-renovation/shared/workflow-db';
 
 export async function POST(req: Request) {
   const s = await requireSession(req, ['boss']);
@@ -21,8 +22,8 @@ export async function POST(req: Request) {
 export async function GET(req: Request) {
   try {
     const s = await requireSession(req, ['boss']); if (s instanceof NextResponse) return s;
-    const [projectRows, taskRows, orderRows, companies, membershipPayments] = await Promise.all([
-      listAllProjects(), listAllTasks(), listAllOrders(), listCompanies(), listMembershipPayments(),
+    const [projectRows, taskRows, orderRows, companies, membershipPayments, contractAttention] = await Promise.all([
+      listAllProjects(), listAllTasks(), listAllOrders(), listCompanies(), listMembershipPayments(), listPlatformAttention(),
     ]);
     const db = await getDb();
     const [resultRows, commissionRows] = await Promise.all([
@@ -104,11 +105,21 @@ export async function GET(req: Request) {
         action: '通过 / 驳回',
       });
     }
+    // 合同里只有平台能办的事：出款复核、平台签署、争议处理、对账差异。不列出来，业主申请拨付后平台不会知道。
+    const CONTRACT_TYPE = { payout_review: '出款复核', platform_signature: '平台签署', dispute: '阶段争议', reconciliation: '对账差异', provider_check: '服务商回执核对' } as const;
+    const projectOfOrder = new Map(orderRows.map(o => [o.id, o.projectId]));
+    for (const item of contractAttention) {
+      approvals.push({
+        id: `contract_${item.orderId}_${item.kind}`, type: `合同 · ${CONTRACT_TYPE[item.kind]}`, level: item.level,
+        subject: `${nameOf.get(projectOfOrder.get(item.orderId) ?? -1) ?? '项目'} · ORDER_${item.orderId}`,
+        detail: item.detail, action: '打开合同履约工作台处理',
+      });
+    }
     for (const o of orderRows.filter(x => ['open', 'matched', 'homeowner_confirmed', 'company_confirmed'].includes(x.status))) {
       approvals.push({
         id: `order_${o.id}`, type: '订单跟进（第一单）', level: '低',
         subject: `${nameOf.get(o.projectId) ?? o.projectId} · ORDER_${o.id}`,
-        detail: `状态 ${o.status}${o.bidAmount ? ` · 报价 ¥${o.bidAmount}` : ''}${o.bidWeeks ? ` · 工期 ${o.bidWeeks} 周` : ''}`,
+        detail: `状态 ${o.status}${o.bidAmount ? ` · 报价 ${o.bidAmount} 万元` : ''}${o.bidWeeks ? ` · 工期 ${o.bidWeeks} 周` : ''}`,
         action: '跟进确认 / 督促双方',
       });
     }

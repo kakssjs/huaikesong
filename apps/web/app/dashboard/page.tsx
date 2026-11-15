@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import NewProjectForm from '../components/NewProjectForm';
-import { INTERIOR_IMAGES, projectImage } from '@/lib/visuals';
+import { INTERIOR_IMAGES, projectCover, type ProjectCover } from '@/lib/visuals';
 
 const DESIGN_FLOW = [
   { step: '01', label: '空间规划', note: '梳理户型、动线与生活需求' },
@@ -23,18 +23,18 @@ export default function HomeownerDashboard() {
   const [user, setUser] = useState<User | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [projects, setProjects] = useState<ProjectCard[]>([]);
+  // 每个项目卡片的图片只用该项目自己保存的效果图或图纸；还没有成果的项目不放图
+  const [covers, setCovers] = useState<Record<number, ProjectCover | null>>({});
   const [delId, setDelId] = useState<number | null>(null);
   const [delBusy, setDelBusy] = useState(false);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem('user');
-      if (raw) {
-        const parsed = JSON.parse(raw) as User;
-        if (parsed && parsed.role === 'homeowner') setUser(parsed);
-      }
-    } catch {}
-    setAuthChecked(true);
+    let live = true;
+    fetch('/api/auth/me').then(r => r.ok ? r.json() : null)
+      .then((current: User | null) => { if (live) setUser(current?.role === 'homeowner' ? current : null); })
+      .catch(() => {})
+      .finally(() => { if (live) setAuthChecked(true); });
+    return () => { live = false; };
   }, []);
 
   useEffect(() => {
@@ -46,6 +46,22 @@ export default function HomeownerDashboard() {
       })
       .catch(() => {});
   }, [user]);
+
+  useEffect(() => {
+    let live = true;
+    for (const p of projects) {
+      if (covers[p.id] !== undefined) continue;
+      fetch('/api/projects/' + p.id)
+        .then(r => (r.ok ? r.json() : null))
+        .then((detail: { results?: { kind: string; content: unknown }[] } | null) => {
+          if (live) setCovers(old => ({ ...old, [p.id]: detail ? projectCover(detail.results, 'render') : null }));
+        })
+        .catch(() => { if (live) setCovers(old => ({ ...old, [p.id]: null })); });
+    }
+    return () => { live = false; };
+    // 只在项目列表变化时读取；covers 仅用来跳过已读取的项目
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects]);
 
   const confirmDelete = async (id: number) => {
     if (delBusy) return;
@@ -148,12 +164,18 @@ export default function HomeownerDashboard() {
           </div>
         ) : (
           <div className="grid-3">
-            {projects.map((p, index) => (
+            {projects.map((p) => {
+              const cover = covers[p.id];
+              return (
               <div key={p.id} style={{ position: 'relative' }}>
-                <a href={'/project/' + p.id} className="role-project-card" style={{ display: 'block', backgroundImage: `url("${projectImage(index + 1)}")` }}>
+                <a href={'/project/' + p.id} className="role-project-card" title={cover?.label}
+                  style={cover
+                    ? { display: 'block', backgroundImage: `url("${cover.src}")`, ...(cover.kind === 'plan' ? { backgroundSize: 'contain', backgroundRepeat: 'no-repeat', backgroundColor: '#f4f1ea' } : {}) }
+                    : { display: 'block', backgroundColor: '#3a4a52' }}>
                   <div className="role-project-content">
                     <h3>{p.name}</h3>
                     <p>{p.style} · {p.stage >= 3 ? '施工匹配中' : '方案设计中'}</p>
+                    {cover === null && <p>还没有保存的图纸或效果图</p>}
                   </div>
                 </a>
                 {delId === p.id ? (
@@ -169,7 +191,8 @@ export default function HomeownerDashboard() {
                   </button>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </section>

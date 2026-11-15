@@ -74,7 +74,8 @@ test('real signing without a provider receipt is refused and never recorded', ()
 
 test('real signing records the provider evidence and the third signature makes the contract signed (not signed_demo)', () => {
   let state = frozen(baseState('real'));
-  const receipt = who => ({ provider: 'test-esign', externalId: `ext-${who}`, receiptId: `rcpt-${who}`, signerVerified: true, signedAt: '2026-01-03T00:00:00.000Z', evidenceHash: 'b'.repeat(64), certificateFingerprint: 'c'.repeat(40) });
+  // The company and the platform sign for an organisation, so their receipts also carry the provider's organisation check.
+  const receipt = who => ({ provider: 'test-esign', externalId: `ext-${who}`, receiptId: `rcpt-${who}`, signerVerified: true, organizationVerified: who !== 'owner', signedAt: '2026-01-03T00:00:00.000Z', evidenceHash: 'b'.repeat(64), certificateFingerprint: 'c'.repeat(40) });
   for (const [who, actor] of [['owner', ACTORS.owner], ['company', ACTORS.company], ['boss', ACTORS.boss]]) {
     state = workflow.reduceWorkflow(state, actor, cmd(state, 'sign', { signerName: who }), ctx({ signing: receipt(who) }));
   }
@@ -101,7 +102,7 @@ test('the same party cannot sign the same real version twice', () => {
 
 function signedReal() {
   let state = frozen(baseState('real'));
-  const receipt = who => ({ provider: 'p', externalId: `e-${who}`, receiptId: `r-${who}`, signerVerified: true, signedAt: '2026-01-03T00:00:00.000Z', evidenceHash: 'b'.repeat(64) });
+  const receipt = who => ({ provider: 'p', externalId: `e-${who}`, receiptId: `r-${who}`, signerVerified: true, organizationVerified: who !== 'owner', signedAt: '2026-01-03T00:00:00.000Z', evidenceHash: 'b'.repeat(64) });
   for (const [who, actor] of [['owner', ACTORS.owner], ['company', ACTORS.company], ['boss', ACTORS.boss]]) state = workflow.reduceWorkflow(state, actor, cmd(state, 'sign', { signerName: who }), ctx({ signing: receipt(who) }));
   return state;
 }

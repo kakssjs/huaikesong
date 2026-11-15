@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CONTRACTOR_MEMBERSHIP_TIERS, getMembershipTier, type MembershipBillingCycle, type MembershipTierId } from "@i-renovation/shared/membership";
 import { estimateContractServiceFee, type CommissionQuote } from "@i-renovation/shared/commission";
 import { explainFairBidding } from "@i-renovation/shared/fair-bidding";
-import { projectImage } from "@/lib/visuals";
+import { projectCover, type ProjectCover } from "@/lib/visuals";
 import ContractWorkbenchDialog from '../components/ContractWorkbenchDialog';
 import ProjectChatButton from '../components/ProjectChatButton';
 
@@ -62,6 +62,8 @@ type ProjectInfo = {
   style: string;
   budget: string;
   area: string | null;
+  /** 业主这个项目自己的图纸或效果图；没有就不显示图片，不用配图代替 */
+  cover: ProjectCover | null;
 };
 
 function isOrderArray(v: unknown): v is Order[] {
@@ -137,21 +139,12 @@ export default function ContractorPortal() {
   const projRef = useRef<Record<number, ProjectInfo | null>>({});
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("user");
-      if (raw) {
-        const parsed = JSON.parse(raw) as PortalUser | null;
-        if (
-          parsed &&
-          parsed.role === "company" &&
-          typeof parsed.id === "number"
-        )
-          setUser(parsed);
-      }
-    } catch {
-      /* 忽略损坏的本地用户数据 */
-    }
-    setAuthChecked(true);
+    let live = true;
+    fetch('/api/auth/me').then(r => r.ok ? r.json() : null)
+      .then((current: PortalUser | null) => { if (live) setUser(current?.role === 'company' ? current : null); })
+      .catch(() => {})
+      .finally(() => { if (live) setAuthChecked(true); });
+    return () => { live = false; };
   }, []);
 
   const ensureProjects = useCallback(async (ids: number[]) => {
@@ -168,6 +161,7 @@ export default function ContractorPortal() {
               budget?: string;
               area?: string | null;
             };
+            results?: { kind: string; content: unknown }[];
           };
           const p = data.project;
           return [
@@ -178,6 +172,7 @@ export default function ContractorPortal() {
                   style: p.style ?? "-",
                   budget: p.budget ?? "-",
                   area: p.area ?? null,
+                  cover: projectCover(data.results, 'plan'),
                 }
               : null,
           ];
@@ -484,7 +479,7 @@ export default function ContractorPortal() {
             {[
               { n: '01', t: '清晰报价', d: '根据项目面积、风格、预算和工期要求，提交更有竞争力的施工方案。' },
               { n: '02', t: '项目交付', d: '统一管理匹配、双方确认、合同签署与订单状态，减少沟通遗漏。' },
-              { n: '03', t: '资质与口碑', d: '资质由平台人工审核，匹配结果结合真实投标和公司服务能力。' },
+              { n: '03', t: '资质与服务能力', d: '资质由平台人工审核，匹配结果结合真实投标和公司服务能力。' },
             ].map(x => (
               <div key={x.n} className="collab-item">
                 <b>{x.n}</b>
@@ -568,22 +563,21 @@ export default function ContractorPortal() {
                       <p>暂无开放项目可竞价</p>
                     </div>
                   ) : (
-                    openOrders.map((o, index) => (
+                    openOrders.map((o) => {
+                      const cover = projMap[o.projectId]?.cover;
+                      return (
                       <div
                         key={o.id}
                         className="panel"
                         style={{ marginBottom: 12, overflow: 'hidden' }}
                       >
-                        <div
-                          style={{
-                            height: 128,
-                            margin: '-20px -22px 18px',
-                            background: `url("${projectImage(index)}") center/cover`,
-                            position: 'relative',
-                          }}
-                        >
-                          <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(90deg, rgba(27,36,42,.46), transparent 62%)' }} />
-                        </div>
+                        {cover && (
+                          <figure style={{ margin: '-20px -22px 18px', background: 'var(--bg-deep)' }}>
+                            <img src={cover.src} alt={cover.label} loading="lazy"
+                              style={{ display: 'block', width: '100%', height: 180, objectFit: cover.kind === 'plan' ? 'contain' : 'cover' }} />
+                            <figcaption style={{ padding: '6px 22px', fontSize: 11, color: 'var(--text-dim)' }}>{cover.label}</figcaption>
+                          </figure>
+                        )}
                         <div className="panel-title">
                           <div className="accent-bar" />
                           {projLabel(o.projectId)}
@@ -646,7 +640,8 @@ export default function ContractorPortal() {
                             {commissionPreview && (
                               <div className="notice notice-ok" style={{ marginBottom: 10, fontSize: 12 }}>
                                 <p>{commissionPreview.note}</p>
-                                预计履约服务费 ¥{commissionPreview.platformCommissionCny.toLocaleString()} · 预计净利 ¥{commissionPreview.contractorNetProfitCny.toLocaleString()}
+                                预计履约服务费 ¥{commissionPreview.platformCommissionCny.toLocaleString()}
+                                {bidCost.trim() ? ` · 预计净利 ¥${commissionPreview.contractorNetProfitCny.toLocaleString()}` : ' · 填写预计成本后才计算预计净利'}
                               </div>
                             )}
                             {financialError && <p role="alert" className="wf-error">{financialError}</p>}
@@ -678,7 +673,8 @@ export default function ContractorPortal() {
                           </div>
                         )}
                       </div>
-                    ))
+                      );
+                    })
                   )}
                 </>
               )}
@@ -716,11 +712,12 @@ export default function ContractorPortal() {
                               <td>{b.projectName}</td>
                               <td>{b.amount}万</td>
                               <td>{b.weeks} 周</td>
-                              <td>¥{(b.estimatedCostCny ?? 0).toLocaleString()}</td>
-                              <td>¥{(b.profitCny ?? 0).toLocaleString()}</td>
+                              {/* 没填预计成本时，毛利和净利只是按成交额算的，不是真实利润，所以不显示数字 */}
+                              <td>{b.estimatedCostCny ? `¥${b.estimatedCostCny.toLocaleString()}` : '未填写'}</td>
+                              <td>{b.estimatedCostCny ? `¥${(b.profitCny ?? 0).toLocaleString()}` : '—'}</td>
                               <td>¥{(b.platformCommissionCny ?? 0).toLocaleString()}</td>
-                              <td>¥{(b.netProfitCny ?? 0).toLocaleString()}</td>
-                              <td>{b.bidRiskLevel === 'low_ball' ? <span className="tag tag-orange">低价风险</span> : b.bidRiskLevel === 'high_ball' ? <span className="tag tag-orange">价格偏高</span> : <span className="tag tag-green">合理</span>}</td>
+                              <td>{b.estimatedCostCny ? `¥${(b.netProfitCny ?? 0).toLocaleString()}` : '—'}</td>
+                              <td>{b.bidRiskLevel === 'low_ball' ? <span className="tag tag-orange">低价风险</span> : b.bidRiskLevel === 'high_ball' ? <span className="tag tag-orange">价格偏高</span> : b.bidRiskLevel === 'fair' ? <span className="tag tag-green">合理</span> : <span className="tag tag-cyan">未评估</span>}</td>
                               <td>{bidStatusTag(b.status)}</td>
                               <td>{b.createdAt.slice(0, 10)}</td>
                             </tr>

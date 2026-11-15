@@ -37,10 +37,15 @@ type WorkflowView = {
   status: WorkflowStatus; versions: ContractVersion[]; current: ContractVersion;
   stages: StageProgress[]; transactions: WorkflowTransaction[]; disputes: WorkflowDispute[]; events: WorkflowEvent[];
   balanceCents: number; fundedCents: number; releasedCents: number; refundedCents: number; realizedFeeCents: number;
+  reservedCents: number; availableCents: number; effective: ContractTerms; // effective = 现行条款（已签合同，或最近一份三方签署的补充协议）
+  providerRequests?: ProviderRequest[]; supplements?: ContractSupplement[]; reconciliation?: ReconciliationReport;
   validation: { missing: string[]; errors: string[]; warnings: string[] }; draftText: string; todos: string[];
   allowedActions: string[]; legacyContract: boolean;
   aiReview: {status:'not_called'|'succeeded'|'failed';mode:'rules'|'model';summary?:string;issues?:string[];at?:string;error?:string;tokensUsed?:number};
 };
+// ProviderRequest: id, kind ('sign'|'fund'|'release'|'refund'), status (见“请求状态”), role, actorId, version, signerName?, termsHash?, supplementId?, amountCents?, stageId?, reason?, provider?, externalId?, actionUrl?（仅发起人可见）, expiresAt?, review?{decision,note,actorId,at}, hold?, failure?, createdAt, updatedAt, settledAt?.
+// ContractSupplement: id, number, status ('proposed'|'frozen'|'partially_signed'|'signed'|'signed_demo'|'withdrawn'), reason, proposedBy, baseVersion, terms, changes[], confirmations, termsHash?, signatures[], finalFileHash?, effectiveAt?.
+// SigningReceipt 另有可选字段：organizationVerified?（公司与平台必须为 true）、signerName?、termsHash?（回显时须与请求一致）、outcome?（'signed'|'declined'|'expired'）。
 // ContractVersion: number, contractId, terms, status, confirmations {company?,homeowner?},
 // signatures [{role,actorId,at,mode,signerName,termsHash,
 //   演示合同: signatureDataUrl, sealDataUrl?, assetVersion?, signatureHash?, sealHash?, sealBinding?
@@ -62,22 +67,45 @@ type WorkflowView = {
 | ai_review | 两者 | 三方 | `{}`；主动发起只读工程复核。先鉴权/幂等/CAS/缺项检查，仅有模型配置时调用；数据不含主体、联系方式、签章图。结果写顶层aiReview，不能改合同或资金；异步期间改版则409丢弃结果。缺配置或失败为503，响应附`workflow`表示已持久化的诚实状态；同键重试返回200且不再调用模型。 |
 | freeze | 两者 | 三方 | `{}`；双方确认且无缺项/金额错误后固定条款hash。 |
 | sign_demo | 仅演示 | 三方 | `{signerName:string,signatureDataUrl:string,authorizeSeal?:boolean}`；只能本人角色签署。公司必须显式authorizeSeal=true且已保存私有公章。全部签署后signed_demo。 |
-| sign | 仅真实 | 三方 | `{signerName:string}`，另需服务端从签署服务商取得的 `SigningReceipt`。要求回执 `signerVerified=true`、`provider/externalId/receiptId` 非空、`evidenceHash` 为 64 位十六进制，且同一服务商的同一回执号不能用于两次签署；同一角色同一版本不能重复签署。公司签署时其合同主体资料须与已保存的签约资料一致。无回执返回 503 `PROVIDER_NOT_CONFIGURED`，回执未核验签署人返回 409 `SIGNER_NOT_VERIFIED`。三方全签后status为signed。 |
+| sign | 仅真实 | 三方 | `{signerName:string, supplementId?:string}`；发起签署，向服务商创建签署会话，返回的请求带 `actionUrl`，此时**不记录签署**。签署记录由服务端取得的 `SigningReceipt` 写入。要求回执 `signerVerified=true`、`provider/externalId/receiptId` 非空、`evidenceHash` 为 64 位十六进制，且同一服务商的同一回执号不能用于两次签署；同一角色同一版本不能重复签署。公司签署时其合同主体资料须与已保存的签约资料一致。无回执返回 503 `PROVIDER_NOT_CONFIGURED`，回执未核验签署人返回 409 `SIGNER_NOT_VERIFIED`。三方全签后status为signed。 |
 | submit_stage | 两者 | 公司 | `{stageId:string,evidence:WorkflowAttachment[],note:string}`；未结算阶段提交证据/整改。 |
 | accept_stage | 两者 | 业主 | `{stageId:string}`；仅可验收已提交阶段。 |
 | reject_stage | 两者 | 业主 | `{stageId:string,reason:string}`；保留驳回与重提历史。 |
 | simulate_fund | 仅演示 | 业主 | `{amountCents:number}`；已三方签署后模拟充值，不算收入。 |
 | simulate_release | 仅演示 | 业主 | `{stageId:string}`；服务端检查验收、争议及余额，金额/服务费取签约版本。 |
 | simulate_refund | 仅演示 | 业主 | `{amountCents:number,reason:string}`；仅可退未结算余额，且保留已验收未结算阶段金额，无未决争议；理由入交易历史，已结算款不回写。 |
-| fund | 仅真实 | 业主 | `{amountCents:number}`，另需 `PaymentReceipt`。回执须 `status='succeeded'` 且 `amountCents` 与本次金额完全相等，同一服务商的同一回执号只能用一次；累计入金不得超过合同总价。 |
-| release | 仅真实 | 业主 | `{stageId:string}`，另需 `PaymentReceipt`（金额须等于该阶段金额）。验收、争议冻结、余额检查与演示相同；服务费由乙方承担，按累计结算额和签约费率逐阶段计收（默认 3%，分位舍入）。 |
-| refund | 仅真实 | 业主 | `{amountCents:number,reason:string}`，另需 `PaymentReceipt`。规则同 simulate_refund：只退未结算余额，保留已验收未结算阶段的资金，有未决争议时禁止。 |
+| fund | 仅真实 | 业主 | `{amountCents:number}`；创建服务商付款请求（含付款链接），回执成功且金额一致才入账。已发起未结束的入金请求也计入合同总价上限。回执须 `status='succeeded'` 且 `amountCents` 与本次金额完全相等，同一服务商的同一回执号只能用一次；累计入金不得超过合同总价。 |
+| release | 仅真实 | 业主 | `{stageId:string}`；申请拨付，进入平台复核（见“出款复核”），回执金额须等于该阶段金额。验收、争议冻结、余额检查与演示相同；服务费由乙方承担，按累计结算额和签约费率逐阶段计收（默认 3%，分位舍入）。 |
+| refund | 仅真实 | 业主 | `{amountCents:number,reason:string}`；申请退款，进入平台复核。规则同 simulate_refund：只退未结算余额，保留已验收未结算阶段的资金，有未决争议时禁止。 |
+| review_payout | 仅真实 | 平台 | `{requestId:string,decision:"approve"|"reject",note:string}`；复核待复核的拨付或退款。 |
+| cancel_request | 仅真实 | 发起人 | `{requestId:string}`；撤回自己的签署请求（未完成时）或尚未复核的出款请求。 |
+| propose_supplement | 两者 | 业主/公司 | `{reason:string,patch:object}`；见“补充协议”。 |
+| confirm_supplement | 两者 | 业主/公司 | `{supplementId:string}`；另一方确认，两方都确认后冻结。 |
+| withdraw_supplement | 两者 | 三方 | `{supplementId:string}`；全部签署前撤回。 |
 | open_dispute | 两者 | 业主/公司 | `{stageId:string,reason:string,evidence?:WorkflowAttachment[]}`；冻结本阶段未结算额。 |
 | resolve_dispute | 两者 | 平台 | `{disputeId:string,independentParty:string,basis:string,outcome:string,disposition?:'continue'|'cancel_stage'}`；默认continue兼容。cancel_stage须有独立处理方和依据且阶段未结算，将进度标记cancelled、保留验收历史与原签约阶段金额，禁止再次提交/验收/出款；释放该阶段的未付资金保留，可另发退款。已结算款不能用此操作抹除，不从自由文本推断执行。 |
 
 真实动作的错误码：`PROVIDER_NOT_CONFIGURED`（503，没有服务商或没有回执）、`SIGNER_NOT_VERIFIED`（409）、`INVALID_RECEIPT`（409，回执缺字段或摘要无效）、`RECEIPT_NOT_SUCCEEDED`（409，回执状态不是成功）、`RECEIPT_AMOUNT_MISMATCH`（409）、`RECEIPT_REUSED`（409）、`MODE_MISMATCH`（409）。
 
-**服务商适配器（尚未接入，需要部署方实现）**：`packages/shared/src/contract-providers.ts` 定义 `SigningProvider`（`createSignRequest`、`fetchResult`）和 `PaymentProvider`（`createPayment`、`fetchPayment`）两个接口，并提供 `requireSigningProvider`、`requirePaymentProvider`，在未配置时抛出 `PROVIDER_NOT_CONFIGURED`。回执必须由服务端向服务商查询得到，不接受浏览器提交的回执。**目前 `POST /api/orders/:id/workflow` 还没有调用这两个接口**：服务端路由里没有“向服务商取回执”的环节，因此在部署方补上这一层之前，真实合同的 `sign`、`fund`、`release`、`refund` 在 HTTP 层不可能成功。实测（隔离服务、未设置 `CONTRACT_MODE`）：合同冻结后业主发 `sign`，返回 503 `PROVIDER_NOT_CONFIGURED`，签名数仍为 0、状态仍为 frozen。前置条件不满足时先返回对应的 409：例如合同未冻结时 `sign` 返回 `INVALID_STATE`（请签署当前冻结版本），未完成三方签署时 `fund` 返回 `INVALID_STATE`（请先完成三方签署）；`PROVIDER_NOT_CONFIGURED` 只在这些前置条件都满足之后出现。
+**服务商适配器（没有内置任何一家，需要部署方实现并注册）**：`packages/shared/src/contract-providers.ts` 定义 `SigningProvider`（`createSignRequest`、`fetchResult`、可选 `verifyCallback`）和 `PaymentProvider`（`createPayment`、`fetchPayment`、可选 `verifyCallback`），以及 `registerContractProviders`、`getContractProviders`、`requireSigningProvider`、`requirePaymentProvider`。部署方导出 `{ signing, payment }` 模块，启动服务时用环境变量 `CONTRACT_PROVIDER_MODULE` 指向它，由 `apps/web/instrumentation.ts` 加载注册；加载失败只写日志，真实动作继续返回 503。
+
+**服务端流程**（真实合同）：
+
+1. 当事人发 `sign`、`fund`，或平台对 `release`/`refund` 请求做 `review_payout` 通过。工作流只记下一条“服务商请求”（`providerRequests`），状态 `creating`，**不记录签署或资金**。
+2. 路由在数据库锁之外调用适配器（`createSignRequest` / `createPayment`，以请求 id 作幂等键），把服务商页面链接 `actionUrl` 记入请求，状态变 `pending`。链接只对发起人可见。服务商拒绝受理则请求变 `failed`，并写明原因。
+3. 当事人在服务商页面完成。随后由 `POST /api/orders/:id/workflow/sync`（订单任一当事人可调用）或服务商回调触发服务端向服务商查询（`fetchResult` / `fetchPayment`）。**浏览器提交的任何回执都不被接受**。
+4. 只有服务商返回的回执通过校验才记录：签署回执须属于本次会话、签署人已核验、公司和平台须通过企业主体与授权核验（`organizationVerified`）、回执回显的签署人与条款摘要须与请求一致、回执号不可复用；资金回执须成功、金额与请求完全一致、回执号不可复用。签署人拒绝或会话过期则请求 `failed`，不记录。回执金额不一致等情形不入账，保留为 `pending` 并写入 `failure`，等待人工核对。
+5. 合同在请求期间被修改或补充协议被撤回时，未完成的签署请求作废，迟到的回执不会被采用。
+
+请求状态：`awaiting_review`（出款等待平台复核，尚未发给服务商，同时保留金额）、`creating`、`pending`（服务商已受理，只有服务商回执能结束它）、`succeeded`、`failed`、`rejected`（平台驳回）、`cancelled`。
+
+`POST /api/orders/:id/workflow/sync`：任一当事人，取回所有未完成请求的服务商记录。`POST /api/orders/:id/workflow/reconcile`：仅平台；把每笔由回执入账的资金流水与资金服务商当前记录逐笔比对，结果写入 `reconciliation`（`ok`、`checked`、`matched`、`mismatches[]`），**只报告差异，不改任何金额**；服务商暂时不可查询时返回 503 `PROVIDER_UNAVAILABLE` 且不记录结果；未配置资金服务商返回 503 `PROVIDER_NOT_CONFIGURED`。`POST /api/contract-providers/signing/callback` 与 `.../payment/callback`：由适配器的 `verifyCallback` 校验，校验失败 401 `INVALID_CALLBACK`；回调只指明要查哪一笔，正文从不写入合同；请求体上限 1 MB。
+
+**出款复核**：真实合同的 `release`（申请拨付）与 `refund`（申请退款）先生成 `awaiting_review` 请求并保留金额（`reservedCents`，`availableCents = balanceCents − reservedCents`）。只有平台可 `review_payout`：`{requestId, decision: "approve"|"reject", note}`（复核意见必填）；通过时会重新检查验收、争议、余额与“已验收款保留”，再交服务商；驳回则释放保留。发起人可在复核前用 `cancel_request` 撤回；已交给服务商的出款不能在本地撤回。该阶段提出争议时，等待复核的出款被撤回，已在服务商处理的出款标记 `hold`（“暂停”，结果仍以服务商回执为准），出款未结清的阶段不能被 `resolve_dispute` 解除（409 `PAYOUT_IN_FLIGHT`）。
+
+**补充协议**（已签合同只能这样变更）：`propose_supplement` `{reason, patch}`（业主或公司；`patch` 只能含 `scope`、`totalCents`、`durationDays`、`stages`、`attachments`、`area`、`areaBasis`、`style`、`location`；改总价须同时给出新的分期；不能改当事人资料、平台费率或上游快照）→ 对方 `confirm_supplement` `{supplementId}` → 冻结并算出 `termsHash` → 三方各自 `sign`/`sign_demo`（payload 带 `supplementId`）→ 全部签署后取代对应条款，`view.effective` 给出现行条款。已提交、验收或结算的阶段不能变更（409 `STAGE_LOCKED`）；同一时间只有一份进行中的补充协议（409 `SUPPLEMENT_IN_PROGRESS`）；`withdraw_supplement` 可在全部签署前撤回。补充协议有独立文件：`GET ?format=html&supplement=<id>`，响应头 `X-Contract-Artifact-SHA256`。已签合同正文和它的 `finalFileHash` 不变。
+
+前置条件不满足时先返回对应的 409：例如合同未冻结时 `sign` 返回 `INVALID_STATE`，未完成三方签署时 `fund` 返回 `INVALID_STATE`；没有注册服务商时，`sign` 在请求创建后被标记 `failed`（“未配置电子签署服务商”），`release`、`refund` 的复核通过返回 503 `PROVIDER_NOT_CONFIGURED`，签名数和资金账本不变。
 
 `GET/PUT /api/company/contract-profile` 仅当前公司可读写。PUT `{party: ContractParty, authorizedSignerName:string, sealDataUrl?:string}`，返回自有资料；原公章仅保存私有数据库，使用时必须明确授权。服务端sharp实际解码（最多1600万像素）后，合成含contractId/version与DEMO标识的640×360派生PNG；只有派生图进入签署快照，原图不进入合同视图或导出。签名也生成绑定版本和角色的应用图，原签名请求仅存hash。其他方看不到可复用原章资料。上传仅PNG/JPEG/WebP，magic与声明类型一致，每张最大1MiB，最多12个附件；禁止SVG。URL参考必须https且注明未冻结外部内容。
 

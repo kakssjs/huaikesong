@@ -3,12 +3,12 @@ import { useEffect, useState, use, Suspense, lazy, useCallback, Fragment } from 
 import { useRouter } from 'next/navigation';
 import { analyzeRoomLayout, type ExpectedWalls, type PlanGeometry, type PlanRoom } from '@i-renovation/shared/plan';
 import { buildSceneModel, type SceneModel } from '@i-renovation/shared/scene3d';
-import { describeMaterialPreset, type MaterialPresetId } from '@i-renovation/shared/materials';
+import { describeMaterialPreset, type MaterialPreset, type MaterialPresetId } from '@i-renovation/shared/materials';
 import { getMembershipTier } from '@i-renovation/shared/membership';
 import FloorPlanStudio, { geometryFromStudioRects, type StudioData, type StudioRect } from '../../components/FloorPlanStudio';
 // 数字员工形象统一为衬线字符徽记（.record-mark），不再使用卡通头像
 import PascalBridge from '../../components/PascalBridge';
-import { INTERIOR_IMAGES } from '@/lib/visuals';
+import { INTERIOR_IMAGES, projectRenders } from '@/lib/visuals';
 import { agentOf } from '@/lib/agents';
 import ProjectLocation, { type ProjectPlace } from '../../components/ProjectLocation';
 import ContractWorkbench from '../../components/ContractWorkbench';
@@ -131,6 +131,17 @@ interface BidData {
   note: string | null;
   status: string;
   createdAt: string;
+}
+
+/** 色卡只显示三维模型实际使用的材质方案里的颜色，不显示与本项目无关的固定材料名。 */
+function MaterialSwatches({ preset }: { preset: MaterialPreset }) {
+  const items: [string, string][] = [['墙面', preset.wall.color], ['地面', preset.floor.color], ['木作', preset.wood.color], ['石材', preset.stone.color], ['金属', preset.metal.color], ['织物', preset.fabric.color]];
+  return (
+    <div className="swatch-row">
+      <span>材质方案 · <i data-no-translate style={{ fontStyle: 'normal' }}>{preset.name}</i></span>
+      {items.map(([label, color]) => <div className="swatch" key={label}><i style={{ background: color }} /><b>{label}</b></div>)}
+    </div>
+  );
 }
 
 function readUser(): { id: number; name: string } {
@@ -456,7 +467,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const savedSceneModel = byKind('scene_model') as SceneModel | undefined;
   const design = byKind('design') as { svg?: string; note?: string } | undefined;
   const quote = byKind('quote') as { items?: { item: string; qty: number; unit: string; price?: number; total: number; source?: string }[]; total?: number; note?: string; weeks?: number; schedule?: { phase: string; weeks: number }[] } | undefined;
-  const match = byKind('match') as { contractors?: { id?: number | string; bidId?: number; name: string; rating?: number; score?: number; reason: string; districts?: string[]; types?: string[]; verified?: boolean; amount?: string | number; weeks?: string | number; membershipTier?: string; customerResourceLevel?: string; ruleScore?: number }[]; note?: string; source?: string; bidCount?: number;
+  const match = byKind('match') as { contractors?: { id?: number | string; bidId?: number; name: string; score?: number; reason: string; districts?: string[]; types?: string[]; verified?: boolean; amount?: string | number; weeks?: string | number; membershipTier?: string; customerResourceLevel?: string; ruleScore?: number }[]; note?: string; source?: string; bidCount?: number;
     matchedBy?: 'llm' | 'mimo' | 'rules'; summary?: string;
     products?: { id: string; name: string; category: string; imageUrl: string; officialUrl: string; room: string; reason: string }[] } | undefined;
 
@@ -467,6 +478,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     ? buildSceneModel(customGeom, customGeom.rooms, data.project.style, { source: 'floor_plan' })
     : savedSceneModel;
   const materialPrompt = activeSceneModel ? describeMaterialPreset(activeSceneModel.materialPreset) : '';
+  // 页头与「设计意向」只用本项目自己的资料：三维模型实际使用的材质方案、Agnes 为本项目生成的效果图
+  const activePreset = activeSceneModel?.materialPreset;
+  const projectShots = projectRenders(results);
 
   const budgetText = (() => {
     const b = (data.project.budget ?? '').trim();
@@ -561,10 +575,10 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
   return (
     <main className="container" style={{ paddingTop: 32 }}>
-      {/* 项目视觉头部 */}
+      {/* 项目视觉头部：背景只用本项目已生成的效果图，没有就用纯色，不用配图冒充 */}
       <section
         className="project-masthead"
-        style={{ backgroundImage: `url("${INTERIOR_IMAGES.living}")` }}
+        style={projectShots[0] ? { backgroundImage: `url("${projectShots[0].src}")` } : { backgroundColor: '#2b3a42' }}
       >
         <div className="project-masthead-content">
           <div>
@@ -685,37 +699,38 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         </div>
       </section>
 
-      {/* 设计意向：真实空间影像 + 材质色卡，让页面有呼吸也有分量 */}
+      {/* 设计意向：只显示本项目自己的资料——业主填写的风格与需求、三维模型实际使用的材质方案、已为本项目生成的效果图 */}
       <section className="moodband">
         <div className="moodband-head">
           <div>
             <div className="brief-eyebrow">DESIGN DIRECTION · 设计意向</div>
-            <h3>轻奢不是堆料，是光、比例与材质的分寸感</h3>
+            <h3><span data-no-translate>{data.project.style}</span> · 本项目的风格与材质</h3>
           </div>
-          <p>以雾蓝灰与暖木色为基调，岩板、胡桃木与黄铜收口；效果图与三维模型都按这套材质语言执行。</p>
+          <p>
+            {data.project.needs?.trim()
+              ? <>业主填写的需求：<span data-no-translate>{data.project.needs.trim()}</span></>
+              : '业主还没有填写居住需求。'}
+            <br />
+            {activePreset
+              ? <>三维模型当前使用的材质方案：<span data-no-translate>{activePreset.name}，{activePreset.description}</span></>
+              : '三维模型生成后，这里显示它实际使用的材质方案。'}
+          </p>
         </div>
-        <div className="mood-grid">
-          {[
-            { img: INTERIOR_IMAGES.livingWarm, t: '自然光与安静秩序', s: 'LIVING / 01' },
-            { img: INTERIOR_IMAGES.detail, t: '材质的温度', s: 'DETAIL / 02' },
-            { img: INTERIOR_IMAGES.texture, t: '触感与层次', s: 'TEXTURE / 03' },
-          ].map(x => (
-            <div key={x.s} className="mood-shot" style={{ backgroundImage: `url("${x.img}")` }}>
-              <div className="mood-caption">
-                <b>{x.t}</b>
-                <span>{x.s}</span>
+        {projectShots.length > 0 ? (
+          <div className="mood-grid" style={projectShots.length < 3 ? { gridTemplateColumns: projectShots.length === 1 ? '1fr' : '1.5fr 1fr' } : undefined}>
+            {projectShots.slice(0, 3).map((shot, i) => (
+              <div key={i} className="mood-shot" style={{ backgroundImage: `url("${shot.src}")` }}>
+                <div className="mood-caption">
+                  <b data-no-translate>{shot.room}</b>
+                  <span>{shot.estimated ? '本项目效果图 · 示意' : '本项目效果图'}</span>
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
-        <div className="swatch-row">
-          <span>材质意向</span>
-          <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#d9d4cc,#b9b2a8)' }} /><b>微水泥</b></div>
-          <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#7a5a41,#a67c52)' }} /><b>胡桃木</b></div>
-          <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#c9a227,#e8d9a0)' }} /><b>黄铜</b></div>
-          <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#e8e4dd,#cfc7bb)' }} /><b>岩板</b></div>
-          <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#cfc6bb,#a99c8f)' }} /><b>羊绒</b></div>
-        </div>
+            ))}
+          </div>
+        ) : (
+          <p className="wf-muted">本项目还没有生成空间效果图。在下方“各房间渲染图”生成后，这里显示本项目自己的图，不使用示例照片。</p>
+        )}
+        {activePreset && <MaterialSwatches preset={activePreset} />}
       </section>
 
       <section style={{ marginTop: 18 }}>
@@ -786,7 +801,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             </tbody>
           </table>
           <p style={{ color: 'var(--text-dim)', fontSize: 11, marginTop: 10 }}>
-            户型识别生成 · 尺寸以现场量房为准
+            {studioRects.length > 0
+              ? '来自你上传或手绘的房型图 · 尺寸以现场量房为准'
+              : plan?.note ? <span data-no-translate>{plan.note}</span> : '尺寸以现场量房为准'}
           </p>
         </section>
       )}
@@ -1035,13 +1052,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             费用计算 · 材料清单与报价工期
             <small>约 {quote.weeks} 周 · 报价师「小算」· 规则估算</small>
           </div>
-          <div className="swatch-row" style={{ marginTop: -2, marginBottom: 16 }}>
-            <span>材料意向</span>
-            <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#e8e4dd,#cfc7bb)' }} /><b>岩板</b></div>
-            <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#7a5a41,#a67c52)' }} /><b>胡桃木</b></div>
-            <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#c9a227,#e8d9a0)' }} /><b>黄铜</b></div>
-            <div className="swatch"><i style={{ background: 'linear-gradient(135deg,#d9d4cc,#b9b2a8)' }} /><b>微水泥</b></div>
-          </div>
+          {activePreset && <div style={{ marginTop: -2, marginBottom: 16 }}><MaterialSwatches preset={activePreset} /></div>}
           <table className="data-table">
             <thead>
               <tr><th>项目</th><th>数量</th><th>单价</th><th>费用</th></tr>
@@ -1138,12 +1149,12 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
               <div key={i} className="contractor-card">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                   <span className="name">{c.name}</span>
-                  <span className="tag tag-orange">{c.score != null ? `匹配度 ${c.score}%` : `★${c.rating ?? '-'}`}</span>
+                  <span className="tag tag-orange">{c.score != null ? `匹配度 ${c.score}%` : '未评分'}</span>
                 </div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '8px 0' }}>
                   <span className={`tag ${c.verified ? 'tag-green' : 'tag-cyan'}`}>{c.verified ? '✓ 资质已人工审核' : '◌ 资质待审核'}</span>
                   <span className="tag tag-purple">{getMembershipTier(c.membershipTier).badge}</span>
-                  {c.amount != null && c.weeks != null && <span className="tag tag-orange">投标 ¥{c.amount} · {c.weeks} 周</span>}
+                  {c.amount != null && c.weeks != null && <span className="tag tag-orange">投标 {c.amount} 万元 · {c.weeks} 周</span>}
                   {c.types?.map(t => <span key={t} className="tag tag-purple">{t}</span>)}
                   {c.districts?.map(d => <span key={d} className="tag tag-cyan">📍{d}</span>)}
                 </div>
@@ -1333,7 +1344,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 10, background: 'var(--accent2-soft)', border: '1px solid #e4d6bd', fontSize: 12, color: 'var(--text)' }}>
               <span className="tag tag-purple" style={{ marginRight: 8 }}>优选推荐</span>
               {recommended
-                ? `${recommended.name}（${recommended.score != null ? `匹配度 ${recommended.score}%` : `★${recommended.rating ?? '-'}`}）· 匹配理由：${recommended.reason}`
+                ? `${recommended.name}（${recommended.score != null ? `匹配度 ${recommended.score}%` : '未评分'}）· 匹配理由：${recommended.reason}`
                 : '暂无 优选推荐结果'}
             </div>
           )}

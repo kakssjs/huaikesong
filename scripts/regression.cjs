@@ -15,6 +15,101 @@ for (const name of fs.readdirSync(path.join(__dirname, '../packages/shared/src')
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'irenovation-regression-'));
 process.env.IRENO_PGLITE_DIR = dataDir;
 const db = require('./.regression/db.js');
+
+test('authentication changes reload the destination even when it is the current route', async () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../apps/web/app/components/AuthNav.tsx'), 'utf8');
+  const tree = ts.createSourceFile('AuthNav.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const functions = {};
+  function visit(node) {
+    if (ts.isFunctionDeclaration(node) && ['handleSuccess', 'logout'].includes(node.name?.text)) functions[node.name.text] = node.getText(tree);
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  const destinations = [];
+  const context = vm.createContext({ window: { location: { assign: url => destinations.push(url) } },
+    router: { push() {} }, setUser() {}, setModalMode() {}, localStorage: { setItem() {}, removeItem() {} },
+    fetch: async () => ({ ok: true }) });
+  vm.runInContext(ts.transpileModule(Object.values(functions).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
+  for (const role of ['homeowner', 'company', 'boss']) context.handleSuccess({ id: 1, role, name: 'synthetic' });
+  await context.logout();
+  assert.deepEqual(destinations, ['/dashboard', '/contractor', '/boss', '/']);
+  const alerts = [];
+  context.window.alert = message => alerts.push(message);
+  context.fetch = async () => ({ ok: false });
+  await context.logout();
+  context.fetch = async () => { throw new Error('offline'); };
+  await context.logout();
+  assert.equal(destinations.length, 4, 'failed logout must not navigate as though the session ended');
+  assert.equal(alerts.length, 2, 'both server failure and offline logout must be visible');
+  context.fetch = async () => ({ ok: true });
+  context.localStorage.setItem = context.localStorage.removeItem = () => { throw new Error('storage blocked'); };
+  context.handleSuccess({ id: 1, role: 'homeowner', name: 'synthetic' });
+  await context.logout();
+  assert.deepEqual(destinations.slice(-2), ['/dashboard', '/'], 'browser storage failure must not block session navigation');
+});
+
+test('project submission uses the server session even when browser identity cache is unavailable', async () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../apps/web/app/components/NewProjectForm.tsx'), 'utf8');
+  const tree = ts.createSourceFile('NewProjectForm.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let submit;
+  function visit(node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'submit') submit = node.getText(tree);
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  const destinations = [], errors = [], requests = [];
+  const context = vm.createContext({ busy: false, setBusy() {}, setError: value => errors.push(value),
+    requestKey: { current: 'synthetic-retry' }, FormData: class { set() {} },
+    localStorage: { getItem() { throw new Error('storage unavailable'); } }, navigator: { onLine: true },
+    router: { push: url => destinations.push(url) },
+    fetch: async url => { requests.push(url); return { ok: true, status: 200, json: async () => ({ id: 42 }) }; } });
+  vm.runInContext(ts.transpileModule(submit, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
+  await context.submit({ preventDefault() {}, currentTarget: {} });
+  assert.deepEqual(requests, ['/api/auth/me', '/api/projects']);
+  assert.deepEqual(destinations, ['/project/42']);
+  assert.deepEqual(errors, ['']);
+});
+
+test('navigation and account pages recover identity from the server rather than stale browser cache', async () => {
+  const vm = require('node:vm');
+  for (const [file, role] of [['components/AuthNav.tsx', 'homeowner'], ['dashboard/page.tsx', 'homeowner'], ['contractor/page.tsx', 'company']]) {
+    const source = fs.readFileSync(path.join(__dirname, '../apps/web/app', file), 'utf8');
+    const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    let effect;
+    function visit(node) {
+      if (!effect && ts.isCallExpression(node) && node.expression.getText(tree) === 'useEffect') effect = node.arguments[0].getText(tree);
+      ts.forEachChild(node, visit);
+    }
+    visit(tree);
+    for (const blockedStorage of [false, true]) {
+      const users = [], calls = [], identity = { id: 42, role, name: 'server identity' };
+      const context = vm.createContext({ setUser: user => users.push(user), setAuthChecked() {},
+        localStorage: { getItem() { if (blockedStorage) throw new Error('storage blocked'); return JSON.stringify({ id: 99, role, name: 'stale identity' }); }, setItem() {}, removeItem() {} },
+        fetch: async url => { calls.push(url); return { ok: true, status: 200, json: async () => identity }; } });
+      vm.runInContext(ts.transpileModule(`(${effect})()`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
+      await new Promise(setImmediate);
+      assert.equal(users.at(-1)?.id, 42, `${file}: server identity with blockedStorage=${blockedStorage}`);
+      assert.ok(calls.includes('/api/auth/me'));
+    }
+  }
+});
+
+test('bid matching compares bid and reference quote in yuan', () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../apps/web/lib/runner.ts'), 'utf8');
+  const tree = ts.createSourceFile('runner.ts', source, ts.ScriptTarget.Latest, true);
+  const scoreBid = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'scoreBid');
+  const context = vm.createContext({ evaluateBidRisk: require('./.regression/fair-bidding.js').evaluateBidRisk });
+  vm.runInContext(ts.transpileModule(scoreBid.getText(tree), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
+  const bid = amount => context.scoreBid(undefined, { amount, weeks: '8' }, '现代简约', 100000);
+  assert.match(bid('10').reason, /报价与平台测算接近/);
+  assert.match(bid('13').reason, /报价基本合理/);
+  assert.match(bid('20').reason, /报价明显高于平台测算/);
+  assert.match(bid('6').reason, /报价低于平台测算/);
+  assert.ok(bid('10').score > bid('20').score);
+});
 after(async () => { await (await db.getDb()).$client.close(); fs.rmSync(dataDir, { recursive: true }); });
 test('project publication retries produce a single order', async () => {
   const owner = await db.createUser({ role: 'homeowner', name: 'test' });

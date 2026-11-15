@@ -25,7 +25,8 @@ export async function POST(req: Request) {
   const area = String(form.get('area') ?? '');
   const needs = String(form.get('needs') ?? '');
   const homeownerId = s.uid;
-  const file = form.get('floorPlan') as File | null;
+  const file = form.get('floorPlan');
+  if (file !== null && !(file instanceof File)) return NextResponse.json({ error: '请上传有效的 PNG、JPEG 或 WebP 户型图' }, { status: 400 });
 
   const requestKey = String(form.get('requestKey') ?? '');
   if (!name || name.length > 120 || style.length > 80 || budget.length > 64 || needs.length > 5000 || requestKey.length > 80 || (area && (!Number.isFinite(Number(area)) || Number(area) <= 0 || Number(area) > 10000))) return NextResponse.json({ error: '请检查项目名称、面积和说明长度' }, { status: 400 });

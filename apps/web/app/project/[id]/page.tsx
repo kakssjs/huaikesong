@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, use, Suspense, lazy, useCallback, Fragment } from 'react';
+import { useEffect, useState, use, Suspense, lazy, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { analyzeRoomLayout, type ExpectedWalls, type PlanGeometry, type PlanRoom } from '@i-renovation/shared/plan';
 import { buildSceneModel, type SceneModel } from '@i-renovation/shared/scene3d';
@@ -16,6 +16,8 @@ import ProjectChatButton from '../../components/ProjectChatButton';
 import DeliveryEvidence, { DELIVERY_LABEL } from '../../components/DeliveryEvidence';
 import { PlanBuildLoader } from '../../components/PlanStory';
 import { buildDeliveryReport } from '@i-renovation/shared/delivery';
+import { buildProjectWorkspace, WORKSPACE_TABS, type WorkspaceTab } from '@/lib/project-workspace';
+import { ProjectWorkflow, ProjectHandoffs, WorkspaceContext } from '../../components/ProjectWorkflow';
 
 const Scene3D = lazy(() => import('../../components/Scene3D'));
 
@@ -166,6 +168,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const router = useRouter();
   const [data, setData] = useState<ProjectData | null>(null);
   const [loadError, setLoadError] = useState('');
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab | null>(null);
+  const [navigationTarget, setNavigationTarget] = useState<{ id: string } | null>(null);
+  const [orderFlow, setOrderFlow] = useState<'loading' | 'ready' | 'error'>('loading');
   const [order, setOrder] = useState<OrderData | null>(null);
   const [bids, setBids] = useState<BidData[]>([]);
   const [bidBusy, setBidBusy] = useState(false);
@@ -190,13 +195,28 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [adjustPct, setAdjustPct] = useState(0);
   const [decision, setDecision] = useState<{ finalTotal: number; adjustPct: number; confirmedAt: string; deliveryTaskId?: number } | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  const [publishBusy, setPublishBusy] = useState(false);
   // 删除项目（两级确认，防误触）
   const [delConfirm, setDelConfirm] = useState(false);
   const [delBusy, setDelBusy] = useState(false);
 
+  const navigateWorkspace = (tab: WorkspaceTab, target: string) => {
+    setWorkspaceTab(tab); setNavigationTarget({ id: target });
+  };
+  useEffect(() => {
+    if (!navigationTarget) return;
+    const frame = requestAnimationFrame(() => {
+      const target = document.getElementById(navigationTarget.id);
+      target?.scrollIntoView({ block: 'start', behavior: 'auto' });
+      target?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [navigationTarget]);
+
   useEffect(() => {
     let cancelled = false;
     setData(null); setLoadError(''); setDecorations([]); setFpData(null); setCustomGeom(null); setOrder(null); setDecision(null);
+    setWorkspaceTab(null); setNavigationTarget(null); setOrderFlow('loading'); setBids([]);
     const load = async () => {
       try {
         const response = await fetch('/api/projects/' + id);
@@ -426,18 +446,21 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         const ordersRes = await fetch('/api/orders?role=homeowner&id=' + homeownerId);
         const ordersJson: unknown = await ordersRes.json();
         if (cancelled) return;
-        const list = Array.isArray(ordersJson) ? (ordersJson as OrderData[]) : [];
+        if (!ordersRes.ok || !Array.isArray(ordersJson)) throw new Error('订单读取失败');
+        const list = ordersJson as OrderData[];
         const current = list.find(o => o.projectId === Number(id)) ?? null;
         setOrder(current);
         if (current) {
           const bidsRes = await fetch('/api/bids?orderId=' + current.id);
           const bidsJson: unknown = await bidsRes.json();
+          if (!bidsRes.ok || !Array.isArray(bidsJson)) throw new Error('投标读取失败');
           if (!cancelled && Array.isArray(bidsJson)) setBids(bidsJson as BidData[]);
         } else if (!cancelled) {
           setBids([]);
         }
+        if (!cancelled) setOrderFlow('ready');
       } catch {
-        /* ignore */
+        if (!cancelled) setOrderFlow('error');
       }
     };
     loadOrderFlow();
@@ -495,8 +518,10 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   })();
 
   // 异常横幅（EXCEPTION_RULES）：等待用户补充 / 升级老板裁决 / 降级交付
-  const waitingTasks = tasks.filter(t => t.status === 'waiting_user');
-  const escalatedTasks = tasks.filter(t => t.status === 'escalated');
+  const latestTasks = tasks.filter(t => !tasks.some(other => other.toAgent === t.toAgent && other.id > t.id));
+  const workspace = buildProjectWorkspace({ delivery, tasks, order, bids, orderFlow, confirmedTaskId: decision?.deliveryTaskId ?? null });
+  const { waitingTasks, escalatedTasks } = workspace;
+  const activeTab = workspaceTab ?? workspace.primary.tab;
 
   const recommended = match?.contractors?.[0];
 
@@ -504,7 +529,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const matcherTask = [...tasks].filter(t => t.toAgent === 'matcher').sort((a, b) => b.id - a.id)[0];
   const matcherBusy = !!matcherTask && (matcherTask.status === 'pending' || matcherTask.status === 'running');
   const matchCount = match?.contractors?.length ?? 0;
-  const phaseLabel = order ? '施工匹配' : delivery.readyForReview ? '待业主确认' : data.project.stage >= 3 ? '方案待复核' : '方案设计';
+  const phaseLabel = ({ input: '需求与户型', design: '方案设计', estimate: '报价与质检', review: '待业主确认', match: '施工匹配', communicate: '双方沟通', fulfil: '签约与履约' })[workspace.current];
 
   const orderStatusTag = (status: string) => {
     const map: Record<string, { text: string; cls: string }> = {
@@ -521,6 +546,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   };
 
   const publishProject = async () => {
+    if (publishBusy || !workspace.ownerConfirmed || orderFlow !== 'ready' || order) return;
+    setPublishBusy(true);
     try {
       const res = await fetch('/api/orders', {
         method: 'POST',
@@ -530,6 +557,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       if (!res.ok) throw new Error((await res.json()).error || '操作失败');
       setOrder((await res.json()) as OrderData);
     } catch (error) { window.alert(error instanceof Error ? error.message : '操作失败，请重试'); }
+    finally { setPublishBusy(false); }
   };
 
   const chooseBid = async (bid: BidData) => {
@@ -553,6 +581,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
   // 用户补充/确认后恢复等待中的任务（reask_user → 续跑流水线）
   const handleResume = async () => {
+    if (!workspace.canResume) return;
     try {
       const resumed = await fetch(`/api/projects/${id}/resume`, { method: 'POST' });
       if (!resumed.ok) {
@@ -580,7 +609,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   };
 
   return (
-    <main className="container" style={{ paddingTop: 32 }}>
+    <main className="container project-workspace-page" style={{ paddingTop: 32 }}>
       {/* 项目视觉头部：背景只用本项目已生成的效果图，没有就用纯色，不用配图冒充 */}
       <section
         className="project-masthead"
@@ -624,6 +653,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         </div>
       </section>
 
+      <ProjectWorkflow workspace={workspace} needs={data.project.needs} onNavigate={navigateWorkspace} />
+
       {/* 异常处理横幅（EXCEPTION_RULES）：反问用户 / 升级老板裁决 */}
       {waitingTasks.map(t => (
         <div key={`wait_${t.id}`} style={{
@@ -638,7 +669,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
               {String(t.output?.exception?.detail ?? '')} —— {String(t.output?.ask ?? '请补充后继续')}
             </div>
           </div>
-          <button className="btn btn-primary" onClick={handleResume} style={{ whiteSpace: 'nowrap' }}>
+          {!workspace.canResume && <p>存在历史待补充任务，请联系平台处理旧任务后再继续。</p>}
+          <button className="btn btn-primary" onClick={handleResume} disabled={!workspace.canResume} style={{ whiteSpace: 'nowrap' }}>
             我已补充，继续 →
           </button>
         </div>
@@ -660,24 +692,18 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         </div>
       ))}
 
-      {/* 阶段进度轨：克制的建筑感时间轴，替代卡通数字员工流水线 */}
-      <div className="stage-rail" style={{ marginTop: 24 }}>
-        {STAGES.map((s, i) => {
-          const status = delivery.stages[i].status;
-          return (
-            <div key={s.key} className={`stage-step ${status}`}>
-              <div className="stage-marker">{status === 'done' ? '✓' : i + 1}</div>
-              <span className="stage-name">{s.label}</span>
-              <span className="stage-note">
-                {DELIVERY_LABEL[status]}
-              </span>
-            </div>
-          );
-        })}
+      <div className="workspace-tabs" role="tablist" aria-label="项目工作区" onKeyDown={event => {
+        const index = WORKSPACE_TABS.findIndex(tab => tab.key === activeTab);
+        const next = event.key === 'ArrowRight' ? (index + 1) % WORKSPACE_TABS.length : event.key === 'ArrowLeft' ? (index + WORKSPACE_TABS.length - 1) % WORKSPACE_TABS.length : event.key === 'Home' ? 0 : event.key === 'End' ? WORKSPACE_TABS.length - 1 : -1;
+        if (next < 0) return;
+        event.preventDefault(); setWorkspaceTab(WORKSPACE_TABS[next].key);
+        document.getElementById('workspace-tab-' + WORKSPACE_TABS[next].key)?.focus();
+      }}>
+        {WORKSPACE_TABS.map(tab => <button type="button" role="tab" id={'workspace-tab-' + tab.key} aria-selected={activeTab === tab.key} aria-controls={'workspace-' + tab.key} tabIndex={activeTab === tab.key ? 0 : -1} key={tab.key} onClick={() => setWorkspaceTab(tab.key)}>{tab.label}</button>)}
       </div>
 
-      <DeliveryEvidence report={delivery} />
-
+      <div id="workspace-input" className="workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-input" tabIndex={-1} hidden={activeTab !== 'input'}>
+      <WorkspaceContext tab="input" workspace={workspace} onNavigate={navigateWorkspace} />
       {/* 项目概要：单块面板 + 细分隔线元数据，替代四张大圆角统计卡 */}
       <section className="project-brief">
         <div className="brief-top">
@@ -703,40 +729,6 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           <div className="brief-item"><span>当前阶段</span><strong>{phaseLabel}</strong></div>
           <div className="brief-item"><span>空间规划</span><strong>{studioRects.length > 0 ? `${studioRects.length} 个空间` : plan?.rooms?.length ? `${plan.rooms.length} 个空间` : '待规划'}</strong></div>
         </div>
-      </section>
-
-      {/* 设计意向：只显示本项目自己的资料——业主填写的风格与需求、三维模型实际使用的材质方案、已为本项目生成的效果图 */}
-      <section className="moodband">
-        <div className="moodband-head">
-          <div>
-            <div className="brief-eyebrow">DESIGN DIRECTION · 设计意向</div>
-            <h3><span data-no-translate>{data.project.style}</span> · 本项目的风格与材质</h3>
-          </div>
-          <p>
-            {data.project.needs?.trim()
-              ? <>业主填写的需求：<span data-no-translate>{data.project.needs.trim()}</span></>
-              : '业主还没有填写居住需求。'}
-            <br />
-            {activePreset
-              ? <>三维模型当前使用的材质方案：<span data-no-translate>{activePreset.name}，{activePreset.description}</span></>
-              : '三维模型生成后，这里显示它实际使用的材质方案。'}
-          </p>
-        </div>
-        {projectShots.length > 0 ? (
-          <div className="mood-grid" style={projectShots.length < 3 ? { gridTemplateColumns: projectShots.length === 1 ? '1fr' : '1.5fr 1fr' } : undefined}>
-            {projectShots.slice(0, 3).map((shot, i) => (
-              <div key={i} className="mood-shot" style={{ backgroundImage: `url("${shot.src}")` }}>
-                <div className="mood-caption">
-                  <b data-no-translate>{shot.room}</b>
-                  <span>{shot.estimated ? '本项目效果图 · 示意' : '本项目效果图'}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="wf-muted">本项目还没有生成空间效果图。在下方“各房间渲染图”生成后，这里显示本项目自己的图，不使用示例照片。</p>
-        )}
-        {activePreset && <MaterialSwatches preset={activePreset} />}
       </section>
 
       <section style={{ marginTop: 18 }}>
@@ -813,6 +805,45 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           </p>
         </section>
       )}
+
+
+      </div>
+
+      <div id="workspace-design" className="workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-design" tabIndex={-1} hidden={activeTab !== 'design'}>
+      <WorkspaceContext tab="design" workspace={workspace} onNavigate={navigateWorkspace} />
+      {/* 设计意向：只显示本项目自己的资料——业主填写的风格与需求、三维模型实际使用的材质方案、已为本项目生成的效果图 */}
+      <section className="moodband">
+        <div className="moodband-head">
+          <div>
+            <div className="brief-eyebrow">DESIGN DIRECTION · 设计意向</div>
+            <h3><span data-no-translate>{data.project.style}</span> · 本项目的风格与材质</h3>
+          </div>
+          <p>
+            {data.project.needs?.trim()
+              ? <>业主填写的需求：<span data-no-translate>{data.project.needs.trim()}</span></>
+              : '业主还没有填写居住需求。'}
+            <br />
+            {activePreset
+              ? <>三维模型当前使用的材质方案：<span data-no-translate>{activePreset.name}，{activePreset.description}</span></>
+              : '三维模型生成后，这里显示它实际使用的材质方案。'}
+          </p>
+        </div>
+        {projectShots.length > 0 ? (
+          <div className="mood-grid" style={projectShots.length < 3 ? { gridTemplateColumns: projectShots.length === 1 ? '1fr' : '1.5fr 1fr' } : undefined}>
+            {projectShots.slice(0, 3).map((shot, i) => (
+              <div key={i} className="mood-shot" style={{ backgroundImage: `url("${shot.src}")` }}>
+                <div className="mood-caption">
+                  <b data-no-translate>{shot.room}</b>
+                  <span>{shot.estimated ? '本项目效果图 · 示意' : '本项目效果图'}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="wf-muted">本项目还没有生成空间效果图。在下方“各房间渲染图”生成后，这里显示本项目自己的图，不使用示例照片。</p>
+        )}
+        {activePreset && <MaterialSwatches preset={activePreset} />}
+      </section>
 
       {/* 空间设计图：标准房型图 */}
       <section className="panel" style={{ marginTop: 18 }}>
@@ -1061,8 +1092,14 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         );
       })()}
 
+
+      </div>
+
+      <div id="workspace-quote" className="workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-quote" tabIndex={-1} hidden={activeTab !== 'quote'}>
+      <WorkspaceContext tab="quote" workspace={workspace} onNavigate={navigateWorkspace} />
+      <DeliveryEvidence report={delivery} />
       {quote?.items && (
-        <section className="panel" style={{ marginTop: 18 }}>
+        <section id="project-quote" tabIndex={-1} className="panel" style={{ marginTop: 18 }}>
           <div className="panel-title">
             <div className="accent-bar" />
             费用计算 · 材料清单与报价工期
@@ -1133,7 +1170,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                   <button className="btn btn-primary review-btn" disabled={confirmBusy || !delivery.readyForReview} onClick={() => void finalConfirm()}>
                     {confirmBusy ? '确认中…' : '✓ 最终确认方案'}
                   </button>
-                  <p>{delivery.readyForReview ? '可先在上方对话修改房间效果；确认后自动发布到接单市场。' : '请先补齐本轮成果并完成质检，再确认方案；历史成果不能代替本轮交付。'}</p>
+                  <p>{delivery.readyForReview ? '可在「设计与 3D」中修改房间效果；确认后自动发布到接单市场。' : '请先补齐本轮成果并完成质检，再确认方案；历史成果不能代替本轮交付。'}</p>
                 </>
               )}
             </div>
@@ -1144,12 +1181,102 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         </section>
       )}
 
+      {!quote?.items && <section id="project-quote" tabIndex={-1} className="panel"><h2>等待本轮报价</h2><p>小算将在设计交接后生成费用明细与工期，请先处理小调提示的当前任务。</p></section>}
+
+      </div>
+
+      <div id="workspace-match" className="workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-match" tabIndex={-1} hidden={activeTab !== 'match'}>
+      <WorkspaceContext tab="match" workspace={workspace} onNavigate={navigateWorkspace} />
+      {orderFlow !== 'ready' && <p role="status" className="notice notice-warn">{orderFlow === 'error' ? '订单或投标读取失败，将自动重试；已有记录不会因此改变。' : '正在读取订单和投标…'}</p>}
+      {/* 发布 · 竞标 · 匹配（第二阶段：等待业主确认 → 发布 → 等待装修公司发布数据（投标）→ 匹配智能体匹配） */}
+      <section className="panel" style={{ marginTop: 18 }}>
+        <div className="panel-title">
+          <div className="accent-bar" />
+          发布 · 竞标 · 匹配
+          <small>业主确认后发布，施工方报价后进行综合匹配</small>
+        </div>
+        <div className="match-layout">
+          <div className="match-steps">
+            {[
+              {
+                label: '① 业主最终确认', ok: !!decision, pending: !decision && !!quote,
+                hint: decision ? `确认价 ¥${decision.finalTotal.toLocaleString()}` : (quote ? '等待你在报价区确认方案' : '等待报价生成'),
+              },
+              {
+                label: '② 发布到接单市场', ok: !!order, pending: !!decision && !order,
+                hint: order ? `ORDER_${order.id} 已发布` : '业主确认后自动发布',
+              },
+              {
+                label: '③ 装修公司发布数据（投标）', ok: bids.length > 0, pending: !!order && bids.length === 0,
+                hint: bids.length > 0 ? `${bids.length} 家已投标` : (order ? '等待装修公司发布投标数据…' : '发布后装修公司可投标'),
+              },
+              {
+                label: '④ 综合匹配', ok: matchCount > 0, pending: matcherBusy || (bids.length > 0 && matchCount === 0),
+                hint: matchCount > 0 ? `已匹配 ${matchCount} 家` : (matcherBusy ? '匹配中…' : (bids.length > 0 ? '待匹配' : '等待投标数据')),
+              },
+            ].map((s, i) => (
+              <div key={i} style={{
+                padding: '12px 14px', borderRadius: 12,
+                border: `1px solid ${s.ok ? '#bfe3d0' : s.pending ? 'var(--border-strong)' : 'var(--border)'}`,
+                background: s.ok ? 'var(--ok-bg)' : s.pending ? 'var(--accent-soft)' : 'rgba(255,255,255,.42)',
+              }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, color: s.ok ? 'var(--accent3)' : s.pending ? 'var(--accent)' : 'var(--text-dim)' }}>
+                  {s.ok ? '✓ ' : s.pending ? '● ' : '○ '}{s.label}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 6 }}>{s.hint}</div>
+              </div>
+            ))}
+          </div>
+          <aside className="match-aside" style={{ backgroundImage: `url("${INTERIOR_IMAGES.architecture}")` }}>
+            <div className="match-aside-copy">
+              <span>FROM DRAWING TO SITE</span>
+              <h4>从图纸到现场</h4>
+              <p>确认方案后自动发布到接单市场，装修公司按真实报价与工期投标，平台协同记录，方案与履约逐项可核对。</p>
+            </div>
+          </aside>
+        </div>
+        {workspace.ownerConfirmed && orderFlow === 'ready' && !order && (
+          <button type="button" onClick={publishProject} disabled={publishBusy} className="btn btn-primary" style={{ marginTop: 12 }}>{publishBusy ? '发布中…' : '重试发布项目'}</button>
+        )}
+      </section>
+
+      {/* 竞标动态 */}
+      {order && (order.status === 'open' || order.status === 'bidding') && (
+        <section className="panel" style={{ marginTop: 18 }}>
+          <div className="panel-title">
+            <div className="accent-bar" />
+            竞标动态
+            <small>ORDER_{order.id}</small>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+            {orderStatusTag(order.status)}
+            <button onClick={() => setShowRecommend(v => !v)} className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 12px' }}>
+              推荐匹配
+            </button>
+          </div>
+          {showRecommend && (
+            <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 10, background: 'var(--accent2-soft)', border: '1px solid #e4d6bd', fontSize: 12, color: 'var(--text)' }}>
+              <span className="tag tag-purple" style={{ marginRight: 8 }}>优选推荐</span>
+              {recommended
+                ? `${recommended.name}（${recommended.score != null ? `匹配度 ${recommended.score}%` : '未评分'}）· 匹配理由：${recommended.reason}`
+                : '暂无 优选推荐结果'}
+            </div>
+          )}
+          {bids.length === 0 && (
+            <p style={{ color: 'var(--text-dim)', fontSize: 12.5, margin: '12px 0 4px' }}>
+              ⏳ 已发布到接单市场，正在等待装修公司发布投标数据…（收到报价后自动开始综合匹配）
+            </p>
+          )}
+          {bids.length > 0 && <div className="wf-table-wrap"><table className="data-table" style={{ marginTop: 14 }}><thead><tr><th>装修公司</th><th>报价（万元）</th><th>工期（周）</th><th>承接选择</th></tr></thead><tbody>{bids.map(b => <tr key={b.id}><td>{b.companyName}</td><td>{b.amount}</td><td>{b.weeks}</td><td><button type="button" className="btn btn-primary" disabled={bidBusy} onClick={() => void chooseBid(b)}>{bidBusy ? '选择中…' : '选择该公司'}</button></td></tr>)}</tbody></table></div>}
+        </section>
+      )}
+
       {matchCount > 0 && (
         <section className="panel" style={{ marginTop: 18 }}>
           <div className="panel-title">
             <div className="accent-bar" />
             匹配的装修队
-            <small>{match!.matchedBy === 'llm' || match!.matchedBy === 'mimo' ? '第二智能体「小桥」· 大模型按真实投标匹配' : '匹配师「小桥」按规则评分匹配'} · 脱敏信息</small>
+            <small>{match!.matchedBy === 'llm' || match!.matchedBy === 'mimo' ? '匹配智能体「小桥」· 大模型按真实投标匹配' : '匹配师「小桥」按规则评分匹配'} · 脱敏信息</small>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '12px 0 4px' }}>
             <div className="record-mark lg">桥</div>
@@ -1201,6 +1328,23 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         </section>
       )}
 
+      <div id="project-communication" tabIndex={-1}>
+      {/* 底部流水线标注 */}
+
+      {order && order.companyId !== null && !['open', 'bidding'].includes(order.status) && <section className="panel chat-project-entry"><h2>和承接装修公司沟通</h2><p>讨论材料、工期与施工细节，沟通记录与当前项目关联。价格和合同变更仍需正式确认。</p><ProjectChatButton orderId={order.id} /></section>}
+      {!workspace.canChat && <section className="panel"><h2>双方沟通</h2><p>业主选定承接装修公司后，这里会开放本项目的私密沟通入口。</p></section>}
+      </div>
+
+      </div>
+
+      <div id="workspace-fulfil" className="workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-fulfil" tabIndex={-1} hidden={activeTab !== 'fulfil'}>
+      {order && order.companyId !== null && !['open', 'bidding'].includes(order.status) && <ContractWorkbench key={order.id} orderId={order.id} role="homeowner" />}
+      {!workspace.canChat && <section className="panel"><h2>签约与履约</h2><p>请先选定装修公司，再进入现有合同与履约工作台。</p><button type="button" className="btn" onClick={() => navigateWorkspace('match', 'workspace-match')}>查看公司匹配 →</button></section>}
+
+      </div>
+
+      <div id="workspace-records" className="workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-records" tabIndex={-1} hidden={activeTab !== 'records'}>
+      <ProjectHandoffs workspace={workspace} onNavigate={navigateWorkspace} />
       {/* 设计执行记录：细线日志，克制的流程档案 */ }
       <section className="panel" style={{ marginTop: 18 }}>
         <div className="panel-title">
@@ -1224,29 +1368,19 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           <div className="flow-strip">
             <div className="flow-strip-label">任务流转 · TASK HANDOFF</div>
             <div className="flow-chain">
-              {[...tasks].sort((a, b) => a.id - b.id).map((t, i) => {
+              {[...tasks].sort((a, b) => a.id - b.id).map(t => {
                 const from = agentOf(t.fromAgent);
                 const to = agentOf(t.toAgent);
                 return (
-                  <Fragment key={t.id}>
-                    {i === 0 && (
-                      <span className="flow-node">
-                        <div className="record-mark">{from.name.slice(-1)}</div>
-                        <span className="flow-node-name">{from.name}</span>
-                        <span className="flow-node-role">{from.role}</span>
-                      </span>
-                    )}
-                    <span className="flow-arrow">→</span>
-                    <span className="flow-node">
+                    <span key={t.id} className="flow-node history-handoff">
+                      <span className="flow-node-name">{from.name} → {to.name}</span>
                       <div className="record-mark">{to.name.slice(-1)}</div>
-                      <span className="flow-node-name">{to.name}</span>
                       <span className="flow-node-role">{to.role}</span>
                       <span className="flow-node-id">#{t.id}</span>
                       {t.status === 'done' && <span className="flow-flag done">✓</span>}
                       {t.status === 'running' && <span className="flow-flag running">●</span>}
                       {t.status === 'failed' && <span className="flow-flag failed">✕</span>}
                     </span>
-                  </Fragment>
                 );
               })}
             </div>
@@ -1285,106 +1419,13 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
         {!match && (
           <div className="record-foot">
-            <i /> {waitingTasks.length ? '流水线已暂停 — 请按上方提示补充户型信息（上传户型图，或在画板标注房间后点「按此图生成 3D」）' : escalatedTasks.length ? '流水线已暂停 — 等待平台人工处理' : tasks.some(t => t.status === 'pending' || t.status === 'running') ? '设计方案生成中 — 这里会实时记录每一步' : delivery.readyForReview ? '本轮成果已齐备 — 等待业主复核确认' : '本轮执行已结束 — 交付问题待修正，请查看上方复核面板'}
+            <i /> {waitingTasks.length ? '流水线已暂停 — 请按上方提示补充户型信息（上传户型图，或在画板标注房间后点「按此图生成 3D」）' : escalatedTasks.length ? '流水线已暂停 — 等待平台人工处理' : latestTasks.some(t => t.status === 'pending' || t.status === 'running') ? '设计方案生成中 — 这里会实时记录每一步' : delivery.readyForReview ? '本轮成果已齐备 — 等待业主复核确认' : '本轮执行已结束 — 交付问题待修正，请查看上方复核面板'}
           </div>
         )}
       </section>
 
-      {/* 发布 · 竞标 · 匹配（第二阶段：等待业主确认 → 发布 → 等待装修公司发布数据（投标）→ 匹配智能体匹配） */}
-      <section className="panel" style={{ marginTop: 18 }}>
-        <div className="panel-title">
-          <div className="accent-bar" />
-          发布 · 竞标 · 匹配
-          <small>业主确认后发布，施工方报价后进行综合匹配</small>
-        </div>
-        <div className="match-layout">
-          <div className="match-steps">
-            {[
-              {
-                label: '① 业主最终确认', ok: !!decision, pending: !decision && !!quote,
-                hint: decision ? `确认价 ¥${decision.finalTotal.toLocaleString()}` : (quote ? '等待你在报价区确认方案' : '等待报价生成'),
-              },
-              {
-                label: '② 发布到接单市场', ok: !!order, pending: !!decision && !order,
-                hint: order ? `ORDER_${order.id} 已发布` : '业主确认后自动发布',
-              },
-              {
-                label: '③ 装修公司发布数据（投标）', ok: bids.length > 0, pending: !!order && bids.length === 0,
-                hint: bids.length > 0 ? `${bids.length} 家已投标` : (order ? '等待装修公司发布投标数据…' : '发布后装修公司可投标'),
-              },
-              {
-                label: '④ 综合匹配', ok: matchCount > 0, pending: matcherBusy || (bids.length > 0 && matchCount === 0),
-                hint: matchCount > 0 ? `已匹配 ${matchCount} 家` : (matcherBusy ? '匹配中…' : (bids.length > 0 ? '待匹配' : '等待投标数据')),
-              },
-            ].map((s, i) => (
-              <div key={i} style={{
-                padding: '12px 14px', borderRadius: 12,
-                border: `1px solid ${s.ok ? '#bfe3d0' : s.pending ? 'var(--border-strong)' : 'var(--border)'}`,
-                background: s.ok ? 'var(--ok-bg)' : s.pending ? 'var(--accent-soft)' : 'rgba(255,255,255,.42)',
-              }}>
-                <div style={{ fontSize: 12.5, fontWeight: 600, color: s.ok ? 'var(--accent3)' : s.pending ? 'var(--accent)' : 'var(--text-dim)' }}>
-                  {s.ok ? '✓ ' : s.pending ? '● ' : '○ '}{s.label}
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 6 }}>{s.hint}</div>
-              </div>
-            ))}
-          </div>
-          <aside className="match-aside" style={{ backgroundImage: `url("${INTERIOR_IMAGES.architecture}")` }}>
-            <div className="match-aside-copy">
-              <span>FROM DRAWING TO SITE</span>
-              <h4>从图纸到现场</h4>
-              <p>确认方案后自动发布到接单市场，装修公司按真实报价与工期投标，平台协同记录，方案与履约逐项可核对。</p>
-            </div>
-          </aside>
-        </div>
-        {doneCount === STAGES.length && !order && !decision && (
-          <button onClick={publishProject} className="btn btn-primary" style={{ marginTop: 12 }}>发布项目</button>
-        )}
-      </section>
 
-      {/* 竞标动态 */}
-      {order && (order.status === 'open' || order.status === 'bidding') && (
-        <section className="panel" style={{ marginTop: 18 }}>
-          <div className="panel-title">
-            <div className="accent-bar" />
-            竞标动态
-            <small>ORDER_{order.id}</small>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
-            {orderStatusTag(order.status)}
-            <button onClick={() => setShowRecommend(v => !v)} className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 12px' }}>
-              推荐匹配
-            </button>
-          </div>
-          {showRecommend && (
-            <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 10, background: 'var(--accent2-soft)', border: '1px solid #e4d6bd', fontSize: 12, color: 'var(--text)' }}>
-              <span className="tag tag-purple" style={{ marginRight: 8 }}>优选推荐</span>
-              {recommended
-                ? `${recommended.name}（${recommended.score != null ? `匹配度 ${recommended.score}%` : '未评分'}）· 匹配理由：${recommended.reason}`
-                : '暂无 优选推荐结果'}
-            </div>
-          )}
-          {bids.length === 0 && (
-            <p style={{ color: 'var(--text-dim)', fontSize: 12.5, margin: '12px 0 4px' }}>
-              ⏳ 已发布到接单市场，正在等待装修公司发布投标数据…（收到报价后自动开始综合匹配）
-            </p>
-          )}
-          {bids.length > 0 && <div className="wf-table-wrap"><table className="data-table" style={{ marginTop: 14 }}><thead><tr><th>装修公司</th><th>报价（万元）</th><th>工期（周）</th><th>承接选择</th></tr></thead><tbody>{bids.map(b => <tr key={b.id}><td>{b.companyName}</td><td>{b.amount}</td><td>{b.weeks}</td><td><button type="button" className="btn btn-primary" disabled={bidBusy} onClick={() => void chooseBid(b)}>{bidBusy ? '选择中…' : '选择该公司'}</button></td></tr>)}</tbody></table></div>}
-        </section>
-      )}
-
-      {/* 底部流水线标注 */}
-
-      {order && order.companyId !== null && !['open', 'bidding'].includes(order.status) && <section className="panel chat-project-entry"><h2>和承接装修公司沟通</h2><p>讨论材料、工期与施工细节，沟通记录与当前项目关联。价格和合同变更仍需正式确认。</p><ProjectChatButton orderId={order.id} /></section>}
-      {order && order.companyId !== null && !['open', 'bidding'].includes(order.status) && <ContractWorkbench key={order.id} orderId={order.id} role="homeowner" />}
-      <div className="closing-steps">
-        <span>STEP 01 识别 → 设计</span>
-        <i />
-        <span>STEP 02 报价 → 工期</span>
-        <i />
-        <span>STEP 03 匹配 → 交付</span>
       </div>
-
       <p style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 11, marginTop: 20 }}>
         予舍 · 住宅设计与装修平台 · 生成结果供参考，最终以签约量房为准
       </p>

@@ -30,6 +30,7 @@ exports.run=async function run(s){
       const step={width};
       try{
         await a.goto(`${s.base}/project/${s.projectId}`,{waitUntil:'networkidle'});
+        await a.getByRole('tab',{name:'匹配与沟通',exact:true}).click();
         await a.getByRole('button',{name:'沟通装修细节',exact:true}).click();
         await a.waitForURL(/\/messages\?conversation=/);await a.locator('#chat-draft:enabled').waitFor();step.ownerEntry=true;
         const navigation=await a.evaluate(()=>{const h=document.querySelector('.topbar').getBoundingClientRect(),n=document.querySelector('.topbar nav').getBoundingClientRect();return {headerBottom:h.bottom,navBottom:n.bottom};});

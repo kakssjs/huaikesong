@@ -317,9 +317,11 @@ async function browserChain(s, orderId) {
       // 业主端：项目页显示已选定公司，合同工作台出现
       await signIn('19900000001', PASSWORD);
       await page.goto(`${base}/project/${s.projectId}`, { waitUntil: 'networkidle' });
+        await page.getByRole('tab', { name: '匹配与沟通', exact: true }).click();
       await page.getByText('匹配的装修队').first().waitFor({ timeout: 20000 });
       step.ownerMatchPanel = true;
-      // 选定公司后项目页隐藏竞标动态，直接显示合同工作台；起始状态是「待公司确认」
+        // 选定公司后从履约分区查看原有合同工作台；起始状态是「待公司确认」
+        await page.getByRole('tab', { name: '签约与履约', exact: true }).click();
       await page.getByText('待公司确认').first().waitFor({ timeout: 20000 });
       step.ownerContractWorkbench = true; step.ownerOverflow = await overflow();
       await page.screenshot({ path: path.join(outDir, `owner-${viewport.width}.png`), fullPage: true });

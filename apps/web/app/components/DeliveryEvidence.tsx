@@ -3,9 +3,10 @@
 import { useState } from 'react';
 import type { buildDeliveryReport, DeliveryStatus } from '@i-renovation/shared/delivery';
 
-export const DELIVERY_LABEL: Record<DeliveryStatus, string> = {
+export const DELIVERY_LABEL: Record<DeliveryStatus | 'cancelled', string> = {
   pending: '待开始', running: '进行中', done: '可复核', failed: '执行失败',
   waiting_user: '待补充', escalated: '待人工处理', stale: '待重新交付', partial: '交付不完整', blocked: '前序待处理',
+  cancelled: '已停止',
 };
 
 export default function DeliveryEvidence({ report }: { report: ReturnType<typeof buildDeliveryReport> }) {
